@@ -1,0 +1,134 @@
+<?php
+
+use App\Livewire\Shifts\ShiftReportPage;
+use App\Livewire\Shifts\ShiftSessionsPage;
+use App\Models\ShiftSession;
+use App\Models\Transaction;
+use App\Models\User;
+use App\Services\Shifts\ShiftSessionService;
+use Database\Seeders\RolePermissionSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Livewire\Livewire;
+
+uses(RefreshDatabase::class);
+
+beforeEach(function () {
+    $this->seed(RolePermissionSeeder::class);
+
+    $this->service = app(ShiftSessionService::class);
+
+    $this->admin = User::factory()->create();
+    $this->admin->assignRole('owner');
+});
+
+function shiftRecordCashSale(ShiftSession $session, int $total): Transaction
+{
+    return Transaction::query()->create([
+        'code' => 'TRX-'.uniqid(),
+        'external_id' => 'EXT-'.uniqid(),
+        'name' => 'Guest',
+        'checkout_link' => '',
+        'subtotal' => $total,
+        'total' => $total,
+        'payment_method' => 'cash',
+        'payment_status' => 'paid',
+        'shift_session_id' => $session->id,
+    ]);
+}
+
+/**
+ * Sesi ditutup dengan kas fisik tertentu (kas seharusnya = kas awal + penjualan
+ * tunai), lalu nominal transaksinya diubah supaya hitungan live menyimpang.
+ */
+function shiftClosedSession(ShiftSessionService $service, int $openingCash, int $cashSales, int $closingCash, int $mutatedTotal): ShiftSession
+{
+    $cashier = User::factory()->create();
+    $session = $service->open($cashier, null, $openingCash);
+    $transaction = shiftRecordCashSale($session, $cashSales);
+    $closed = $service->close($session, $closingCash, $cashier);
+
+    $transaction->update(['total' => $mutatedTotal]);
+
+    return $closed;
+}
+
+/**
+ * Dua sesi tertutup (kas fisik pas dan kurang 10.000) plus satu sesi terbuka.
+ *
+ * @return array{closedA: ShiftSession, closedB: ShiftSession, open: ShiftSession}
+ */
+function shiftReconciliationScenario(ShiftSessionService $service): array
+{
+    $closedA = shiftClosedSession($service, openingCash: 100000, cashSales: 50000, closingCash: 150000, mutatedTotal: 90000);
+    $closedB = shiftClosedSession($service, openingCash: 200000, cashSales: 30000, closingCash: 220000, mutatedTotal: 40000);
+
+    $openCashier = User::factory()->create();
+    $open = $service->open($openCashier, null, 50000);
+    shiftRecordCashSale($open, 20000);
+
+    return ['closedA' => $closedA, 'closedB' => $closedB, 'open' => $open];
+}
+
+function shiftMoney(int $amount): string
+{
+    return 'Rp'.number_format($amount, 0, ',', '.');
+}
+
+test('cash session list uses stored figures for closed sessions and live figures for open sessions', function () {
+    $scenario = shiftReconciliationScenario($this->service);
+
+    $component = Livewire::actingAs($this->admin)->test(ShiftSessionsPage::class)->assertOk();
+
+    $summaries = $component->viewData('summaries');
+    $closedA = $summaries[(int) $scenario['closedA']->id];
+    $closedB = $summaries[(int) $scenario['closedB']->id];
+    $open = $summaries[(int) $scenario['open']->id];
+
+    expect($closedA['expected_cash'])->toBe(150000)
+        ->and($closedA['closing_cash'])->toBe(150000)
+        ->and($closedA['variance'])->toBe(0)
+        ->and($closedB['expected_cash'])->toBe(230000)
+        ->and($closedB['closing_cash'])->toBe(220000)
+        ->and($closedB['variance'])->toBe(-10000)
+        ->and($open['expected_cash'])->toBe(70000)
+        ->and($open['closing_cash'])->toBeNull()
+        ->and($open['variance'])->toBeNull();
+
+    $component
+        ->assertSee(shiftMoney($closedA['expected_cash']))
+        ->assertSee(shiftMoney($closedB['expected_cash']))
+        ->assertSee(shiftMoney($open['expected_cash']))
+        // Hitung ulang sesi A (100.000 + 90.000) tidak boleh tampil.
+        ->assertDontSee(shiftMoney(190000));
+});
+
+test('shift report uses stored figures for closed sessions and totals match the rows', function () {
+    $scenario = shiftReconciliationScenario($this->service);
+
+    $component = Livewire::actingAs($this->admin)->test(ShiftReportPage::class)->assertOk();
+
+    $summaries = $component->viewData('summaries');
+    $totals = $component->viewData('totals');
+
+    expect($summaries[(int) $scenario['closedA']->id]['expected_cash'])->toBe(150000)
+        ->and($summaries[(int) $scenario['closedA']->id]['variance'])->toBe(0)
+        ->and($summaries[(int) $scenario['closedB']->id]['expected_cash'])->toBe(230000)
+        ->and($summaries[(int) $scenario['closedB']->id]['variance'])->toBe(-10000)
+        ->and($summaries[(int) $scenario['open']->id]['expected_cash'])->toBe(70000)
+        ->and($summaries[(int) $scenario['open']->id]['variance'])->toBeNull()
+        ->and($totals)->toMatchArray([
+            'sessions' => 3,
+            'sessions_open' => 1,
+            'expected_cash' => 450000,
+            'closing_cash' => 370000,
+            'variance' => -10000,
+        ]);
+
+    // Total kartu harus sama dengan penjumlahan nilai baris yang ditampilkan.
+    expect(array_sum(array_column($summaries, 'expected_cash')))->toBe($totals['expected_cash'])
+        ->and(array_sum(array_column($summaries, 'cash_sales')))->toBe($totals['cash_sales']);
+
+    $component
+        ->assertSee(shiftMoney($totals['expected_cash']))
+        ->assertSee(shiftMoney($totals['variance']));
+});
