@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class ShiftCashMovement extends Model
 {
@@ -15,9 +16,6 @@ class ShiftCashMovement extends Model
         'note',
         'created_by_user_id',
         'reversal_of_id',
-        'reversed_at',
-        'reversed_by_user_id',
-        'reversal_reason',
     ];
 
     protected function casts(): array
@@ -25,8 +23,6 @@ class ShiftCashMovement extends Model
         return [
             'amount' => 'integer',
             'reversal_of_id' => 'integer',
-            'reversed_at' => 'datetime',
-            'reversed_by_user_id' => 'integer',
         ];
     }
 
@@ -40,19 +36,16 @@ class ShiftCashMovement extends Model
         return $this->belongsTo(User::class, 'created_by_user_id');
     }
 
-    public function reversalOf(): BelongsTo
+    public function reversal(): HasOne
     {
-        return $this->belongsTo(self::class, 'reversal_of_id');
-    }
-
-    public function reversedBy(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'reversed_by_user_id');
+        return $this->hasOne(self::class, 'reversal_of_id');
     }
 
     public function isReversed(): bool
     {
-        return $this->reversed_at !== null;
+        return $this->relationLoaded('reversal')
+            ? $this->reversal !== null
+            : $this->reversal()->exists();
     }
 
     public function isIn(): bool

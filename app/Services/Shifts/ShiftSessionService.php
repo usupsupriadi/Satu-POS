@@ -265,10 +265,10 @@ class ShiftSessionService
     }
 
     /**
-     * Batalkan gerakan kas pada sesi yang sudah ditutup secara append-only.
-     * Baris asli hanya ditandai batal, koreksinya dicatat sebagai baris baru
-     * berlawanan arah; snapshot rekonsiliasi sesi tidak berubah sehingga angka
-     * kas historis tetap dan koreksi tetap terlihat di jejak gerakan kas.
+     * Batalkan gerakan kas pada sesi yang sudah ditutup secara append-only:
+     * koreksinya dicatat sebagai baris baru berlawanan arah yang menunjuk baris
+     * aslinya. Snapshot rekonsiliasi sesi tidak berubah sehingga angka kas
+     * historis tetap dan koreksi tetap terlihat di jejak gerakan kas.
      *
      * @throws RuntimeException bila sesi masih terbuka, alasan kosong, atau
      *                          gerakan kas sudah pernah dibatalkan.
@@ -300,23 +300,14 @@ class ShiftSessionService
                 throw new RuntimeException('Gerakan kas ini sudah dibatalkan.');
             }
 
-            $reversal = ShiftCashMovement::query()->create([
+            return ShiftCashMovement::query()->create([
                 'shift_session_id' => $original->shift_session_id,
                 'type' => $original->isIn() ? 'out' : 'in',
                 'amount' => $original->amount,
-                'category' => null,
                 'note' => 'Pembatalan: '.$reason,
                 'created_by_user_id' => $user->id,
                 'reversal_of_id' => $original->id,
             ]);
-
-            $original->forceFill([
-                'reversed_at' => CarbonImmutable::now(),
-                'reversed_by_user_id' => $user->id,
-                'reversal_reason' => $reason,
-            ])->save();
-
-            return $reversal;
         });
     }
 

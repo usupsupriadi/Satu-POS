@@ -38,6 +38,15 @@ function makeShiftTransaction(ShiftSession $session, array $attributes = []): Tr
     ], $attributes));
 }
 
+function makeClosedMovement(User $user, int $amount = 10000): ShiftCashMovement
+{
+    $session = makeOpenSessionFor($user, 100000);
+    $movement = app(ShiftSessionService::class)->recordMovement($session, 'in', $amount, null, null, $user);
+    app(ShiftSessionService::class)->close($session->fresh(), 100000, $user);
+
+    return $movement;
+}
+
 test('records cash movement in and out and affects expected cash', function () {
     $user = User::factory()->create();
     $session = makeOpenSessionFor($user, 100000);
@@ -105,7 +114,7 @@ test('deleteMovement rejects closed session', function () {
     expect(ShiftCashMovement::query()->whereKey($movement->id)->exists())->toBeTrue();
 });
 
-test('closed session movement reversal is append-only and keeps stored figures', function () {
+test('reversing a closed session movement appends the opposite row and keeps stored figures', function () {
     $user = User::factory()->create();
     $session = makeOpenSessionFor($user, 100000);
     $movement = $this->service->recordMovement($session, 'in', 50000, 'Setoran', null, $user);
@@ -119,17 +128,13 @@ test('closed session movement reversal is append-only and keeps stored figures',
         ->and((int) $reversal->amount)->toBe(50000)
         ->and((int) $reversal->reversal_of_id)->toBe((int) $movement->id)
         ->and((int) $reversal->shift_session_id)->toBe((int) $session->id)
-        ->and($reversal->note)->toContain('Salah input setoran');
+        ->and((int) $reversal->created_by_user_id)->toBe((int) $user->id)
+        ->and($reversal->note)->toBe('Pembatalan: Salah input setoran');
 
-    $original = $movement->fresh();
-
-    expect($original->isReversed())->toBeTrue()
-        ->and((int) $original->reversed_by_user_id)->toBe((int) $user->id)
-        ->and($original->reversal_reason)->toBe('Salah input setoran')
-        ->and(ShiftCashMovement::query()->where('shift_session_id', $session->id)->count())->toBe(2);
-
-    // Append-only: koreksi tidak mengubah angka sesi yang sudah ditutup.
-    expect($this->service->reconciliation($closed->fresh()))->toMatchArray($before);
+    expect($movement->fresh()->isReversed())->toBeTrue()
+        ->and(ShiftCashMovement::query()->where('shift_session_id', $session->id)->count())->toBe(2)
+        // Append-only: koreksi tidak mengubah angka sesi yang sudah ditutup.
+        ->and($this->service->reconciliation($closed->fresh()))->toMatchArray($before);
 });
 
 test('reverseMovement rejects an open session', function () {
@@ -143,28 +148,25 @@ test('reverseMovement rejects an open session', function () {
     expect($movement->fresh()->isReversed())->toBeFalse();
 });
 
-test('reverseMovement requires a reason', function () {
+test('reverseMovement requires a reason and allows only one reversal', function () {
     $user = User::factory()->create();
-    $session = makeOpenSessionFor($user);
-    $movement = $this->service->recordMovement($session, 'in', 10000, null, null, $user);
-    $this->service->close($session->fresh(), 10000, $user);
+    $movement = makeClosedMovement($user);
+    $movements = fn () => ShiftCashMovement::query()->where('shift_session_id', $movement->shift_session_id)->count();
 
     expect(fn () => $this->service->reverseMovement($movement, $user, '   '))
         ->toThrow(RuntimeException::class);
 
-    expect($movement->fresh()->isReversed())->toBeFalse();
-});
-
-test('reverseMovement cannot reverse the same movement twice', function () {
-    $user = User::factory()->create();
-    $session = makeOpenSessionFor($user);
-    $movement = $this->service->recordMovement($session, 'in', 10000, null, null, $user);
-    $this->service->close($session->fresh(), 10000, $user);
+    expect($movements())->toBe(1);
 
     $this->service->reverseMovement($movement, $user, 'Salah input');
 
+    expect($movement->fresh()->isReversed())->toBeTrue()
+        ->and($movements())->toBe(2);
+
     expect(fn () => $this->service->reverseMovement($movement, $user, 'Salah input lagi'))
         ->toThrow(RuntimeException::class);
+
+    expect($movements())->toBe(2);
 });
 
 test('close stores expected cash including movements', function () {

@@ -9,12 +9,9 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('shift_cash_movements', function (Blueprint $table) {
-            // Pembatalan gerakan kas bersifat append-only: baris asli hanya
-            // ditandai, koreksinya dicatat sebagai baris baru berlawanan arah.
+            // Pembatalan bersifat append-only: baris koreksi menunjuk baris
+            // aslinya, tanpa mengubah atau menandai ulang baris asli.
             $table->foreignId('reversal_of_id')->nullable()->constrained('shift_cash_movements')->nullOnDelete();
-            $table->timestamp('reversed_at')->nullable();
-            $table->foreignId('reversed_by_user_id')->nullable()->constrained('users')->nullOnDelete();
-            $table->string('reversal_reason', 255)->nullable();
         });
     }
 
@@ -22,8 +19,6 @@ return new class extends Migration
     {
         Schema::table('shift_cash_movements', function (Blueprint $table) {
             $table->dropConstrainedForeignId('reversal_of_id');
-            $table->dropConstrainedForeignId('reversed_by_user_id');
-            $table->dropColumn(['reversed_at', 'reversal_reason']);
         });
     }
 };
