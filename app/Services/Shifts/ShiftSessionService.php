@@ -264,6 +264,62 @@ class ShiftSessionService
         });
     }
 
+    /**
+     * Batalkan gerakan kas pada sesi yang sudah ditutup secara append-only.
+     * Baris asli hanya ditandai batal, koreksinya dicatat sebagai baris baru
+     * berlawanan arah; snapshot rekonsiliasi sesi tidak berubah sehingga angka
+     * kas historis tetap dan koreksi tetap terlihat di jejak gerakan kas.
+     *
+     * @throws RuntimeException bila sesi masih terbuka, alasan kosong, atau
+     *                          gerakan kas sudah pernah dibatalkan.
+     */
+    public function reverseMovement(ShiftCashMovement $movement, User $user, string $reason): ShiftCashMovement
+    {
+        $reason = trim($reason);
+
+        if ($reason === '') {
+            throw new RuntimeException('Alasan pembatalan gerakan kas wajib diisi.');
+        }
+
+        return DB::transaction(function () use ($movement, $user, $reason): ShiftCashMovement {
+            $session = ShiftSession::query()
+                ->whereKey($movement->shift_session_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($session->isOpen()) {
+                throw new RuntimeException('Sesi kas masih terbuka; hapus gerakan kas alih-alih membatalkannya.');
+            }
+
+            $original = ShiftCashMovement::query()
+                ->whereKey($movement->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($original->isReversed()) {
+                throw new RuntimeException('Gerakan kas ini sudah dibatalkan.');
+            }
+
+            $reversal = ShiftCashMovement::query()->create([
+                'shift_session_id' => $original->shift_session_id,
+                'type' => $original->isIn() ? 'out' : 'in',
+                'amount' => $original->amount,
+                'category' => null,
+                'note' => 'Pembatalan: '.$reason,
+                'created_by_user_id' => $user->id,
+                'reversal_of_id' => $original->id,
+            ]);
+
+            $original->forceFill([
+                'reversed_at' => CarbonImmutable::now(),
+                'reversed_by_user_id' => $user->id,
+                'reversal_reason' => $reason,
+            ])->save();
+
+            return $reversal;
+        });
+    }
+
     public function close(ShiftSession $session, int $closingCash, User $closedBy, ?string $note = null): ShiftSession
     {
         if ($closingCash < 0) {
