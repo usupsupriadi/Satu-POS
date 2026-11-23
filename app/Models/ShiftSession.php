@@ -22,6 +22,7 @@ class ShiftSession extends Model
         'closing_cash',
         'expected_cash',
         'variance',
+        'summary_snapshot',
         'status',
         'closed_by_user_id',
         'note',
@@ -37,6 +38,7 @@ class ShiftSession extends Model
             'closing_cash' => 'integer',
             'expected_cash' => 'integer',
             'variance' => 'integer',
+            'summary_snapshot' => 'array',
         ];
     }
 

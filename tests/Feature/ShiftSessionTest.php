@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\Shift;
+use App\Models\ShiftCashMovement;
 use App\Models\ShiftSession;
 use App\Models\Transaction;
 use App\Models\User;
@@ -8,6 +9,7 @@ use App\Services\Shifts\ShiftSessionService;
 use Carbon\CarbonImmutable;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 
 uses(RefreshDatabase::class);
 
@@ -64,6 +66,31 @@ test('rejects a second open session for the same cashier', function () {
         ->toThrow(RuntimeException::class);
 
     expect(ShiftSession::query()->where('user_id', $user->id)->count())->toBe(1);
+});
+
+test('opening a cash session locks the cashier row before checking and creating the session', function () {
+    $user = User::factory()->create();
+
+    DB::flushQueryLog();
+    DB::enableQueryLog();
+
+    $this->service->open($user, null, 100000);
+
+    $queries = collect(DB::getQueryLog())->pluck('query');
+
+    DB::disableQueryLog();
+    DB::flushQueryLog();
+
+    // Kunci baris kasir harus diambil sebelum insert agar dua request
+    // bersamaan tidak sama-sama membuat sesi open.
+    $lockIndex = $queries->search(
+        fn (string $sql) => (bool) preg_match('/^select .*from ["`]?users["`]?/i', ltrim($sql)),
+    );
+    $insertIndex = $queries->search(fn (string $sql) => str_starts_with(ltrim($sql), 'insert into'));
+
+    expect($lockIndex)->not->toBeFalse()
+        ->and($insertIndex)->not->toBeFalse()
+        ->and($lockIndex)->toBeLessThan($insertIndex);
 });
 
 test('closing a session stores expected cash and variance from paid transactions', function () {
@@ -136,6 +163,47 @@ test('closed session reconciliation keeps stored cash figures', function () {
         ->and($openSummary['expected_cash'])->toBe(100000)
         ->and($openSummary['closing_cash'])->toBeNull()
         ->and($openSummary['variance'])->toBeNull();
+});
+
+test('closed session reconciliation keeps the full stored snapshot', function () {
+    $user = User::factory()->create();
+    $session = $this->service->open($user, null, 100000);
+
+    $transaction = makePaidTransaction($session, 50000, 'cash');
+    $this->service->recordMovement($session, 'in', 20000, 'Setoran', null, $user);
+    $this->service->recordMovement($session, 'out', 5000, 'Bensin', null, $user);
+
+    $closed = $this->service->close($session, 165000, $user);
+
+    // Data sumber berubah setelah penutupan; seluruh ringkasan harus tetap.
+    $transaction->update(['total' => 90000, 'refunded_amount' => 40000]);
+    ShiftCashMovement::query()->where('shift_session_id', $session->id)->delete();
+
+    $summary = $this->service->reconciliation($closed->fresh());
+
+    expect($closed->fresh()->summary_snapshot)->toMatchArray([
+        'transaction_count' => 1,
+        'total_sales' => 50000,
+        'cash_sales' => 50000,
+        'cash_refunds' => 0,
+        'cash_movements_in' => 20000,
+        'cash_movements_out' => 5000,
+        'cash_movement_count' => 2,
+        'expected_cash' => 165000,
+    ])
+        ->and($summary)->toMatchArray([
+            'transaction_count' => 1,
+            'total_sales' => 50000,
+            'cash_sales' => 50000,
+            'non_cash_sales' => 0,
+            'cash_refunds' => 0,
+            'cash_movements_in' => 20000,
+            'cash_movements_out' => 5000,
+            'cash_movement_count' => 2,
+            'expected_cash' => 165000,
+            'closing_cash' => 165000,
+            'variance' => 0,
+        ]);
 });
 
 test('active session lookup returns only the open session of that cashier', function () {

@@ -16,19 +16,37 @@ class Transaction extends Model
     protected static function booted(): void
     {
         static::saving(function (Transaction $transaction): void {
-            if ($transaction->shift_session_id === null) {
-                return;
-            }
-
             // Hanya validasi saat shift_session_id baru/diubah, agar edit field lain
             // pada transaksi yang sudah tertaut ke sesi tertutup tetap diizinkan.
             if (! $transaction->isDirty('shift_session_id')) {
                 return;
             }
 
-            $session = ShiftSession::query()->find($transaction->shift_session_id);
+            $originalSessionId = $transaction->getOriginal('shift_session_id');
 
-            if (! $session || ! $session->isOpen()) {
+            // Melepas tautan (null) dari sesi yang sudah ditutup sama berbahayanya
+            // dengan menautkan ke sesi tertutup, jadi tautan yang sudah ada tidak
+            // boleh dilepas sama sekali.
+            if ($originalSessionId !== null && $transaction->shift_session_id === null) {
+                throw new RuntimeException('Transaksi yang sudah tertaut ke sesi kas tidak dapat dilepas dari sesinya.');
+            }
+
+            $sessionIds = array_values(array_unique(array_filter(
+                [$originalSessionId, $transaction->shift_session_id],
+                fn ($sessionId) => $sessionId !== null,
+            )));
+
+            if ($sessionIds === []) {
+                return;
+            }
+
+            // Sesi asal dan tujuan sama-sama harus terbuka; satu query untuk keduanya.
+            $openSessions = ShiftSession::query()
+                ->whereKey($sessionIds)
+                ->open()
+                ->count();
+
+            if ($openSessions !== count($sessionIds)) {
                 throw new RuntimeException('Transaksi tidak dapat ditautkan ke sesi kas yang sudah ditutup.');
             }
         });

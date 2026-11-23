@@ -23,6 +23,21 @@ function makeOpenSessionFor(User $user, int $openingCash = 100000): ShiftSession
     return app(ShiftSessionService::class)->open($user, null, $openingCash);
 }
 
+function makeShiftTransaction(ShiftSession $session, array $attributes = []): Transaction
+{
+    return Transaction::query()->create(array_merge([
+        'code' => 'TRX-'.uniqid(),
+        'external_id' => 'EXT-'.uniqid(),
+        'name' => 'Guest',
+        'checkout_link' => '',
+        'subtotal' => 100,
+        'total' => 100,
+        'payment_method' => 'cash',
+        'payment_status' => 'paid',
+        'shift_session_id' => $session->id,
+    ], $attributes));
+}
+
 test('records cash movement in and out and affects expected cash', function () {
     $user = User::factory()->create();
     $session = makeOpenSessionFor($user, 100000);
@@ -110,17 +125,7 @@ test('cannot create transaction linked to closed session', function () {
     $session = makeOpenSessionFor($user);
     $this->service->close($session, 0, $user);
 
-    expect(fn () => Transaction::query()->create([
-        'code' => 'TRX-'.uniqid(),
-        'external_id' => 'EXT-'.uniqid(),
-        'name' => 'Guest',
-        'checkout_link' => '',
-        'subtotal' => 100,
-        'total' => 100,
-        'payment_method' => 'cash',
-        'payment_status' => 'paid',
-        'shift_session_id' => $session->id,
-    ]))->toThrow(RuntimeException::class);
+    expect(fn () => makeShiftTransaction($session))->toThrow(RuntimeException::class);
 });
 
 test('cannot reassign transaction to closed session', function () {
@@ -129,17 +134,7 @@ test('cannot reassign transaction to closed session', function () {
     $closedSession = makeOpenSessionFor(User::factory()->create());
     $this->service->close($closedSession, 0, $closedSession->user);
 
-    $transaction = Transaction::query()->create([
-        'code' => 'TRX-'.uniqid(),
-        'external_id' => 'EXT-'.uniqid(),
-        'name' => 'Guest',
-        'checkout_link' => '',
-        'subtotal' => 100,
-        'total' => 100,
-        'payment_method' => 'cash',
-        'payment_status' => 'paid',
-        'shift_session_id' => $openSession->id,
-    ]);
+    $transaction = makeShiftTransaction($openSession);
 
     $this->service->close($openSession->fresh(), 0, $user);
 
@@ -147,21 +142,46 @@ test('cannot reassign transaction to closed session', function () {
         ->toThrow(RuntimeException::class);
 });
 
+test('cannot detach a transaction from its cash session', function (bool $closed) {
+    $user = User::factory()->create();
+    $session = makeOpenSessionFor($user);
+
+    $transaction = makeShiftTransaction($session);
+
+    if ($closed) {
+        $this->service->close($session->fresh(), 0, $user);
+    }
+
+    expect(fn () => $transaction->update(['shift_session_id' => null]))
+        ->toThrow(RuntimeException::class);
+
+    expect((int) $transaction->fresh()->shift_session_id)->toBe((int) $session->id);
+})->with([
+    'sesi tertutup' => true,
+    'sesi terbuka' => false,
+]);
+
+test('cannot move transaction from closed session to another open session', function () {
+    $user = User::factory()->create();
+    $session = makeOpenSessionFor($user);
+
+    $transaction = makeShiftTransaction($session);
+
+    $this->service->close($session->fresh(), 0, $user);
+
+    $otherSession = makeOpenSessionFor(User::factory()->create());
+
+    expect(fn () => $transaction->update(['shift_session_id' => $otherSession->id]))
+        ->toThrow(RuntimeException::class);
+
+    expect((int) $transaction->fresh()->shift_session_id)->toBe((int) $session->id);
+});
+
 test('can edit other fields of transaction linked to closed session', function () {
     $user = User::factory()->create();
     $session = makeOpenSessionFor($user);
 
-    $transaction = Transaction::query()->create([
-        'code' => 'TRX-'.uniqid(),
-        'external_id' => 'EXT-'.uniqid(),
-        'name' => 'Guest',
-        'checkout_link' => '',
-        'subtotal' => 100,
-        'total' => 100,
-        'payment_method' => 'cash',
-        'payment_status' => 'paid',
-        'shift_session_id' => $session->id,
-    ]);
+    $transaction = makeShiftTransaction($session);
 
     $this->service->close($session->fresh(), 0, $user);
 
@@ -175,17 +195,7 @@ test('can create transaction linked to open session', function () {
     $user = User::factory()->create();
     $session = makeOpenSessionFor($user);
 
-    $transaction = Transaction::query()->create([
-        'code' => 'TRX-'.uniqid(),
-        'external_id' => 'EXT-'.uniqid(),
-        'name' => 'Guest',
-        'checkout_link' => '',
-        'subtotal' => 100,
-        'total' => 100,
-        'payment_method' => 'cash',
-        'payment_status' => 'paid',
-        'shift_session_id' => $session->id,
-    ]);
+    $transaction = makeShiftTransaction($session);
 
     expect($transaction)->not->toBeNull()
         ->and((int) $transaction->shift_session_id)->toBe((int) $session->id);

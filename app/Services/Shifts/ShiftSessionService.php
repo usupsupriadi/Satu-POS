@@ -14,6 +14,15 @@ use RuntimeException;
 
 class ShiftSessionService
 {
+    /**
+     * Status transaksi yang uangnya sudah masuk ke laci kas. Transaksi yang
+     * direfund tetap dihitung di sini supaya kas hanya turun sebesar nilai
+     * refund (lihat refunded_amount), bukan sebesar total penjualannya.
+     *
+     * @var list<string>
+     */
+    public const SETTLED_PAYMENT_STATUSES = ['paid', 'partial_refund', 'refunded'];
+
     public function activeFor(?User $user): ?ShiftSession
     {
         if (! $user) {
@@ -60,6 +69,11 @@ class ShiftSessionService
         }
 
         return DB::transaction(function () use ($user, $shift, $openingCash, $note) {
+            // Kunci baris kasir lebih dulu: lockForUpdate pada sesi open yang
+            // belum ada tidak mengunci apa pun, sehingga dua request bersamaan
+            // bisa sama-sama lolos pengecekan dan membuat dua sesi open.
+            User::query()->whereKey($user->id)->lockForUpdate()->firstOrFail();
+
             $existing = ShiftSession::query()
                 ->where('user_id', $user->id)
                 ->open()
@@ -89,9 +103,10 @@ class ShiftSessionService
     }
 
     /**
-     * Ringkasan kas transaksi yang tertaut ke sesi ini. Hanya transaksi lunas
-     * yang dihitung, refund tunai dikurangkan, dan gerakan kas (setoran/ambil)
-     * ditambahkan ke kas seharusnya.
+     * Ringkasan kas transaksi yang tertaut ke sesi ini. Transaksi lunas dan
+     * yang sudah direfund (penuh/sebagian) ikut dihitung, refund tunai
+     * dikurangkan, dan gerakan kas (setoran/ambil) ditambahkan ke kas
+     * seharusnya.
      *
      * @return array{transaction_count: int, total_sales: int, cash_sales: int, non_cash_sales: int, cash_refunds: int, cash_movements_in: int, cash_movements_out: int, cash_movement_count: int, expected_cash: int}
      */
@@ -99,7 +114,7 @@ class ShiftSessionService
     {
         $base = Transaction::query()
             ->where('shift_session_id', $session->id)
-            ->where('payment_status', 'paid');
+            ->whereIn('payment_status', self::SETTLED_PAYMENT_STATUSES);
 
         $transactionCount = (int) (clone $base)->count();
         $totalSales = (int) (clone $base)->sum('total');
@@ -135,26 +150,55 @@ class ShiftSessionService
 
     /**
      * Angka rekonsiliasi untuk ditampilkan. Sesi yang sudah ditutup memakai
-     * nilai tersimpan (agar historis tidak berubah), sesi terbuka dihitung live.
+     * snapshot penuh yang disimpan saat penutupan (agar historis tidak berubah
+     * ketika transaksi/gerakan kas diubah), sesi terbuka dihitung live.
      *
-     * @return array{transaction_count: int, total_sales: int, cash_sales: int, non_cash_sales: int, cash_refunds: int, expected_cash: int, closing_cash: int|null, variance: int|null}
+     * @return array{transaction_count: int, total_sales: int, cash_sales: int, non_cash_sales: int, cash_refunds: int, cash_movements_in: int, cash_movements_out: int, cash_movement_count: int, expected_cash: int, closing_cash: int|null, variance: int|null}
      */
     public function reconciliation(ShiftSession $session): array
     {
-        $summary = $this->cashSummary($session);
-
         if ($session->isOpen()) {
+            $summary = $this->cashSummary($session);
             $summary['closing_cash'] = null;
             $summary['variance'] = null;
 
             return $summary;
         }
 
+        $summary = $this->closedSummary($session);
+
         $summary['expected_cash'] = $session->expected_cash ?? $summary['expected_cash'];
         $summary['closing_cash'] = $session->closing_cash;
         $summary['variance'] = $session->variance;
 
         return $summary;
+    }
+
+    /**
+     * Ringkasan tersimpan untuk sesi tertutup. Sesi lama yang belum punya
+     * snapshot dihitung live sebagai fallback.
+     *
+     * @return array{transaction_count: int, total_sales: int, cash_sales: int, non_cash_sales: int, cash_refunds: int, cash_movements_in: int, cash_movements_out: int, cash_movement_count: int, expected_cash: int}
+     */
+    private function closedSummary(ShiftSession $session): array
+    {
+        $snapshot = $session->summary_snapshot;
+
+        if (! is_array($snapshot)) {
+            return $this->cashSummary($session);
+        }
+
+        return [
+            'transaction_count' => (int) ($snapshot['transaction_count'] ?? 0),
+            'total_sales' => (int) ($snapshot['total_sales'] ?? 0),
+            'cash_sales' => (int) ($snapshot['cash_sales'] ?? 0),
+            'non_cash_sales' => (int) ($snapshot['non_cash_sales'] ?? 0),
+            'cash_refunds' => (int) ($snapshot['cash_refunds'] ?? 0),
+            'cash_movements_in' => (int) ($snapshot['cash_movements_in'] ?? 0),
+            'cash_movements_out' => (int) ($snapshot['cash_movements_out'] ?? 0),
+            'cash_movement_count' => (int) ($snapshot['cash_movement_count'] ?? 0),
+            'expected_cash' => (int) ($snapshot['expected_cash'] ?? 0),
+        ];
     }
 
     /**
@@ -244,6 +288,7 @@ class ShiftSessionService
                 'closing_cash' => $closingCash,
                 'expected_cash' => $summary['expected_cash'],
                 'variance' => $closingCash - $summary['expected_cash'],
+                'summary_snapshot' => $summary,
                 'closed_by_user_id' => $closedBy->id,
                 'note' => $note !== null && trim($note) !== '' ? trim($note) : $locked->note,
             ])->save();

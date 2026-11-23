@@ -4,7 +4,6 @@ namespace App\Livewire\Shifts;
 
 use App\Models\Shift;
 use App\Models\ShiftSession;
-use App\Models\Transaction;
 use App\Models\User;
 use App\Services\Shifts\ShiftSessionService;
 use Carbon\CarbonImmutable;
@@ -106,30 +105,21 @@ class ShiftReportPage extends Component
             $summaries[(int) $row->id] = $sessionService->reconciliation($row);
         }
 
-        $transactions = Transaction::query()
-            ->whereIn('shift_session_id', (clone $this->baseQuery())->select('id'))
-            ->where('payment_status', 'paid');
-
-        // Total kas mengikuti angka yang tampil di baris: sesi tertutup memakai
-        // nilai tersimpan, sesi terbuka memakai hitungan live.
-        $openSessions = (clone $this->baseQuery())
-            ->where('status', 'open')
-            ->get(['id', 'status', 'opening_cash', 'expected_cash']);
-
-        $openExpectedCash = $openSessions->reduce(
-            fn (int $carry, ShiftSession $session) => $carry + $sessionService->reconciliation($session)['expected_cash'],
-            0,
-        );
+        // Total selalu mengikuti angka yang tampil di baris: sesi tertutup
+        // memakai snapshot saat penutupan, sesi terbuka memakai hitungan live.
+        $allRows = (clone $this->baseQuery())
+            ->get(['id', 'status', 'opening_cash', 'expected_cash', 'closing_cash', 'variance', 'summary_snapshot']);
+        $allSummaries = $allRows->map(fn (ShiftSession $session) => $sessionService->reconciliation($session));
 
         $totals = [
-            'sessions' => (int) (clone $this->baseQuery())->count(),
-            'sessions_open' => $openSessions->count(),
-            'transactions' => (int) (clone $transactions)->count(),
-            'total_sales' => (int) (clone $transactions)->sum('total'),
-            'cash_sales' => (int) (clone $transactions)->where('payment_method', 'cash')->sum('total'),
-            'expected_cash' => (int) (clone $this->baseQuery())->where('status', 'closed')->sum('expected_cash') + $openExpectedCash,
-            'closing_cash' => (int) (clone $this->baseQuery())->sum('closing_cash'),
-            'variance' => (int) (clone $this->baseQuery())->sum('variance'),
+            'sessions' => $allSummaries->count(),
+            'sessions_open' => $allRows->where('status', 'open')->count(),
+            'transactions' => (int) $allSummaries->sum('transaction_count'),
+            'total_sales' => (int) $allSummaries->sum('total_sales'),
+            'cash_sales' => (int) $allSummaries->sum('cash_sales'),
+            'expected_cash' => (int) $allSummaries->sum('expected_cash'),
+            'closing_cash' => (int) $allSummaries->sum(fn (array $summary) => $summary['closing_cash'] ?? 0),
+            'variance' => (int) $allSummaries->sum(fn (array $summary) => $summary['variance'] ?? 0),
         ];
 
         return view('livewire.shifts.shift-report-page', [
