@@ -17,6 +17,7 @@ use App\Models\VoucherRedemption;
 use App\Services\PriceService;
 use App\Services\SelfOrder\SelfOrderCheckoutService;
 use App\Services\Transactions\ReceiptEmailService;
+use App\Services\Transactions\ReleaseOrderBenefits;
 use App\Services\Transactions\TransactionEventService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -24,6 +25,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Midtrans\Config as MidtransConfig;
 use Midtrans\Snap as MidtransSnap;
 
@@ -100,11 +102,13 @@ class TransactionController extends Controller
 
         $canViewDetail = $user->can('transactions.details');
 
-        $items = Transaction::query()
+        $pendingQuery = fn () => Transaction::query()
             ->where('channel', 'self_order')
             ->where('payment_method', 'qris_midtrans')
             ->where('payment_status', 'paid')
-            ->where('is_midtrans_processed', false)
+            ->where('is_midtrans_processed', false);
+
+        $items = $pendingQuery()
             ->with('diningTable:id,table_number')
             ->latest('paid_at')
             ->limit(15)
@@ -120,13 +124,12 @@ class TransactionController extends Controller
             ])
             ->all();
 
+        // Endpoint ini dipoll berkala oleh UI kasir: hitung total hanya bila
+        // memang ada lebih dari satu halaman (≤15 item cukup dihitung dari hasil).
+        $count = count($items) < 15 ? count($items) : $pendingQuery()->count();
+
         return response()->json([
-            'count' => Transaction::query()
-                ->where('channel', 'self_order')
-                ->where('payment_method', 'qris_midtrans')
-                ->where('payment_status', 'paid')
-                ->where('is_midtrans_processed', false)
-                ->count(),
+            'count' => $count,
             'items' => $items,
         ]);
     }
@@ -511,10 +514,17 @@ class TransactionController extends Controller
             $taxRate = (float) ($setting->tax_rate ?? 0);
             $taxBase = (bool) ($setting->discount_applies_before_tax ?? true) ? $netSubtotal : $grossSubtotal;
             $taxAmount = PriceService::calculateTax($taxBase, $taxRate);
-            $totalBeforeRounding = $netSubtotal + $taxAmount;
-            $roundingAmount = 0;
-            $feeAmount = (int) round($totalBeforeRounding * 0.007);
-            $totalAfterFee = $totalBeforeRounding + $feeAmount;
+
+            $feePercent = max(0.0, (float) config('midtrans.fee_percent', 0.7));
+            $feeAmount = (int) round(($netSubtotal + $taxAmount) * ($feePercent / 100));
+            $totalBeforeRounding = $netSubtotal + $taxAmount + $feeAmount;
+
+            // Jalur kasir memakai rounding_base dari pengaturan; jalur online
+            // sebelumnya melewatinya sehingga total kedua kanal tidak sama.
+            $roundingBase = max(0, (int) ($setting->rounding_base ?? 0));
+            $roundingResult = PriceService::applyRounding($totalBeforeRounding, $roundingBase);
+            $totalAfterFee = (int) ($roundingResult['total'] ?? $totalBeforeRounding);
+            $roundingAmount = (int) ($roundingResult['rounding_amount'] ?? 0);
 
             // Add tax item to Midtrans details if tax > 0
             if ($taxAmount > 0) {
@@ -539,8 +549,17 @@ class TransactionController extends Controller
                 'id' => 'fee',
                 'quantity' => 1,
                 'price' => $feeAmount,
-                'name' => 'Biaya Admin (0,7%)',
+                'name' => 'Biaya Admin ('.rtrim(rtrim(number_format($feePercent, 2, ',', ''), '0'), ',').'%)',
             ];
+
+            if ($roundingAmount !== 0) {
+                $itemDetails[] = [
+                    'id' => 'rounding',
+                    'quantity' => 1,
+                    'price' => (int) $roundingAmount,
+                    'name' => 'Pembulatan',
+                ];
+            }
 
             $customerDetails = [
                 'first_name' => $name,
@@ -603,6 +622,15 @@ class TransactionController extends Controller
                 if ($pointsToRedeem > 0) {
                     app(\App\Services\PointService::class)->redeemPoints($transaction, $pointsToRedeem);
                 }
+
+                // Reservasi kuota voucher sejak order dibuat supaya beberapa
+                // order QRIS pending tidak bisa memakai kode sekali-pakai yang sama.
+                $this->reserveVoucherForTransaction(
+                    $transaction,
+                    $voucher,
+                    is_numeric($memberId) ? (int) $memberId : null,
+                    (string) $phone
+                );
 
                 $allocations = (array) ($voucher['allocations'] ?? []);
 
@@ -686,6 +714,10 @@ class TransactionController extends Controller
 
             return redirect($transaction->checkout_link);
 
+        } catch (ValidationException $e) {
+            return redirect()
+                ->route('self-order.payment.cart')
+                ->with('error', (string) (collect($e->errors())->flatten()->first() ?? 'Stok bahan tidak mencukupi.'));
         } catch (\Exception $e) {
             Log::error('Failed to create transaction', [
                 'exception' => $e,
@@ -736,7 +768,7 @@ class TransactionController extends Controller
             }
 
             $previous = (string) $transaction->payment_status;
-            $mapped = $this->mapMidtransStatusToPaymentStatus($midStatus);
+            $mapped = $this->mapMidtransStatusToPaymentStatus($midStatus, $previous);
             $transaction->payment_status = $mapped;
             $transaction->midtrans_status = $midStatus !== '' ? $midStatus : null;
             $transaction->midtrans_payload = $request->all();
@@ -753,6 +785,12 @@ class TransactionController extends Controller
                     'current' => (string) $transaction->payment_status,
                     'midtrans_status' => (string) ($transaction->midtrans_status ?? ''),
                 ]);
+            }
+
+            if (in_array($mapped, ['expired', 'failed'], true) && $previous !== $mapped) {
+                // Pesanan online batal/kedaluwarsa: kembalikan poin yang sudah
+                // dipotong saat checkout dan lepas kuota voucher yang direservasi.
+                $this->releaseBenefitsForUnpaidOrder($transaction);
             }
 
             if ($mapped === 'paid' && $previous !== 'paid') {
@@ -907,11 +945,19 @@ class TransactionController extends Controller
             return;
         }
 
-        $exists = VoucherRedemption::query()
+        // Reservasi dibuat saat order dibuat; di sini cukup tandai waktu lunas.
+        $existing = VoucherRedemption::query()
             ->where('transaction_id', (int) $transaction->id)
-            ->exists();
+            ->first();
 
-        if ($exists) {
+        $paidAt = $transaction->paid_at ?? now();
+
+        if ($existing) {
+            $existing->forceFill([
+                'redeemed_at' => $existing->redeemed_at ?? $paidAt,
+                'paid_at' => $paidAt,
+            ])->save();
+
             return;
         }
 
@@ -945,6 +991,7 @@ class TransactionController extends Controller
                     ],
                 ],
                 'redeemed_at' => $trx->paid_at ?? now(),
+                'paid_at' => $trx->paid_at ?? now(),
             ]);
 
             $code->increment('times_redeemed');
@@ -958,24 +1005,130 @@ class TransactionController extends Controller
         });
     }
 
-    private function mapMidtransStatusToPaymentStatus(?string $status): string
+    /**
+     * Petakan status Midtrans ke payment_status lokal tanpa pernah menurunkan
+     * transaksi yang sudah settled (mis. notifikasi `refund`/`chargeback` yang
+     * tidak dikenal sebelumnya membuat transaksi lunas kembali `pending`).
+     */
+    private function mapMidtransStatusToPaymentStatus(?string $status, ?string $currentStatus = null): string
     {
-        if (in_array($status, ['settlement', 'capture'], true)) {
-            return 'paid';
+        $status = strtolower(trim((string) $status));
+        $current = strtolower(trim((string) $currentStatus));
+        $settled = in_array($current, ['paid', 'partial_refund', 'refunded'], true);
+
+        return match ($status) {
+            'settlement', 'capture' => 'paid',
+            'refund' => $settled ? 'refunded' : ($current !== '' ? $current : 'pending'),
+            'partial_refund' => $settled ? 'partial_refund' : ($current !== '' ? $current : 'pending'),
+            'pending', 'authorize' => $settled ? $current : 'pending',
+            'expire' => $settled ? $current : 'expired',
+            'cancel', 'deny', 'failure' => $settled ? $current : 'failed',
+            default => $current !== '' ? $current : 'pending',
+        };
+    }
+
+    /**
+     * Lepas poin & kuota voucher untuk pesanan online yang batal/kedaluwarsa.
+     */
+    private function releaseBenefitsForUnpaidOrder(Transaction $transaction): void
+    {
+        DB::transaction(function () use ($transaction): void {
+            $locked = Transaction::query()
+                ->whereKey((int) $transaction->id)
+                ->lockForUpdate()
+                ->first();
+
+            if (! $locked || ! in_array((string) $locked->payment_status, ['expired', 'failed'], true)) {
+                return;
+            }
+
+            $released = app(ReleaseOrderBenefits::class)->release($locked);
+
+            if ($released['points_refunded'] > 0 || $released['voucher_released']) {
+                app(TransactionEventService::class)->record($locked, 'order_benefits_released', [
+                    'source' => 'midtrans_webhook',
+                    'points_refunded' => $released['points_refunded'],
+                    'voucher_released' => $released['voucher_released'],
+                ]);
+            }
+        });
+    }
+
+    /**
+     * Reservasi kuota voucher pada saat order dibuat (sebelum lunas) supaya
+     * kuota tidak bisa dipakai berkali-kali oleh order pending yang paralel.
+     */
+    private function reserveVoucherForTransaction(Transaction $transaction, array $voucher, ?int $memberId, string $guestIdentifier): void
+    {
+        $voucherCodeId = (int) ($voucher['voucher_code_id'] ?? 0);
+        $voucherCampaignId = (int) ($voucher['voucher_campaign_id'] ?? 0);
+
+        if ($voucherCodeId <= 0 || $voucherCampaignId <= 0) {
+            return;
         }
 
-        if ($status === 'pending') {
-            return 'pending';
+        $alreadyReserved = VoucherRedemption::query()
+            ->where('transaction_id', (int) $transaction->id)
+            ->exists();
+
+        if ($alreadyReserved) {
+            return;
         }
 
-        if ($status === 'expire') {
-            return 'expired';
+        $code = VoucherCode::query()
+            ->with('campaign')
+            ->whereKey($voucherCodeId)
+            ->lockForUpdate()
+            ->first();
+
+        if (! $code || ! (bool) $code->is_active) {
+            throw new \RuntimeException('Voucher tidak aktif.');
         }
 
-        if (in_array($status, ['cancel', 'deny', 'failure'], true)) {
-            return 'failed';
+        $limitTotal = $code->usage_limit_total ?? $code->campaign?->usage_limit_total;
+        if ($limitTotal !== null && (int) $code->times_redeemed >= (int) $limitTotal) {
+            throw new \RuntimeException('Kuota voucher habis.');
         }
 
-        return 'pending';
+        $limitUser = $code->usage_limit_per_user ?? $code->campaign?->usage_limit_per_user;
+        if ($limitUser !== null) {
+            $query = VoucherRedemption::query()->where('voucher_code_id', $voucherCodeId);
+
+            if ($memberId) {
+                $query->where('member_id', $memberId);
+            } else {
+                $query->where('guest_identifier', $guestIdentifier);
+            }
+
+            if ((int) $query->count() >= (int) $limitUser) {
+                throw new \RuntimeException('Kuota voucher untuk customer habis.');
+            }
+        }
+
+        $campaign = $code->campaign;
+
+        VoucherRedemption::query()->create([
+            'voucher_campaign_id' => $voucherCampaignId,
+            'voucher_code_id' => $voucherCodeId,
+            'transaction_id' => (int) $transaction->id,
+            'member_id' => $memberId,
+            'guest_identifier' => $memberId ? null : ($guestIdentifier !== '' ? $guestIdentifier : null),
+            'discount_amount' => (int) $transaction->voucher_discount_amount,
+            'snapshot' => [
+                'campaign' => [
+                    'id' => (int) $voucherCampaignId,
+                    'name' => $campaign?->name,
+                    'discount_type' => $campaign?->discount_type,
+                    'discount_value' => $campaign?->discount_value,
+                    'max_discount_amount' => $campaign?->max_discount_amount,
+                    'min_eligible_subtotal' => $campaign?->min_eligible_subtotal,
+                    'is_member_only' => (bool) ($campaign?->is_member_only ?? false),
+                ],
+                'reserved_before_payment' => true,
+            ],
+            'redeemed_at' => now(),
+        ]);
+
+        $code->increment('times_redeemed');
     }
 }
