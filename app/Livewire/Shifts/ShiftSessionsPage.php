@@ -115,7 +115,7 @@ class ShiftSessionsPage extends Component
     {
         $session = ShiftSession::query()->findOrFail((int) $this->closeSessionId);
 
-        $this->authorizeClose($session);
+        $this->authorizeSession($session);
 
         if (! $session->isOpen()) {
             $this->dispatch('toast', type: 'error', message: 'Sesi kas ini sudah ditutup.');
@@ -150,7 +150,7 @@ class ShiftSessionsPage extends Component
     {
         $session = ShiftSession::query()->findOrFail((int) $this->closeSessionId);
 
-        $this->authorizeClose($session);
+        $this->authorizeSession($session);
 
         $this->validate([
             'closingCash' => ['required', 'numeric', 'min:0'],
@@ -181,7 +181,7 @@ class ShiftSessionsPage extends Component
     {
         $session = ShiftSession::query()->findOrFail($sessionId);
 
-        $this->authorizeMovement($session);
+        $this->authorizeSession($session);
 
         $this->movementSessionId = (int) $session->id;
         $this->movementType = 'in';
@@ -211,7 +211,7 @@ class ShiftSessionsPage extends Component
 
         $session = ShiftSession::query()->findOrFail((int) $this->movementSessionId);
 
-        $this->authorizeMovement($session);
+        $this->authorizeSession($session);
 
         $this->validate([
             'movementType' => ['required', 'in:in,out'],
@@ -247,7 +247,7 @@ class ShiftSessionsPage extends Component
     {
         [$movement, $session] = $this->findMovementSession($movementId);
 
-        $this->authorizeMovement($session);
+        $this->authorizeSession($session);
 
         try {
             $sessionService->deleteMovement($movement);
@@ -264,7 +264,7 @@ class ShiftSessionsPage extends Component
     {
         [$movement, $session] = $this->findMovementSession($movementId);
 
-        $this->authorizeMovement($session);
+        $this->authorizeSession($session);
 
         if ($session->isOpen() || $movement->reversal_of_id !== null || $movement->isReversed()) {
             $this->dispatch('toast', type: 'error', message: 'Gerakan kas ini tidak bisa dibatalkan.');
@@ -294,7 +294,7 @@ class ShiftSessionsPage extends Component
 
         [$movement, $session] = $this->findMovementSession((int) $this->reversalMovementId);
 
-        $this->authorizeMovement($session);
+        $this->authorizeSession($session);
 
         $this->validate([
             'reversalReason' => ['required', 'string', 'max:255'],
@@ -357,51 +357,29 @@ class ShiftSessionsPage extends Component
         ])->layout('layouts.app', ['title' => $this->title]);
     }
 
-    private function authorizeClose(ShiftSession $session): void
-    {
-        $userId = auth()->id();
-
-        if ($userId !== null && (int) $session->user_id === (int) $userId) {
-            $this->authorize('shifts.sessions.close');
-
-            return;
-        }
-
-        $this->authorize('shifts.sessions.close.any');
-    }
-
-    private function authorizeMovement(ShiftSession $session): void
-    {
-        $userId = auth()->id();
-
-        if ($userId !== null && (int) $session->user_id === (int) $userId) {
-            $this->authorize('shifts.sessions.close');
-
-            return;
-        }
-
-        $this->authorize('shifts.sessions.close.any');
-    }
-
     /**
-     * Cermin dari authorizeClose()/authorizeMovement() untuk tampilan: tombol
-     * gerakan kas dan tutup kas hanya muncul pada sesi sendiri atau bila user
-     * boleh menutup sesi kasir lain, supaya tidak ada tombol yang berujung 403
-     * saat diklik.
+     * Satu-satunya sumber aturan izin kas: sesi milik sendiri cukup
+     * shifts.sessions.close, sesi kasir lain butuh shifts.sessions.close.any.
+     * Dipakai untuk otorisasi aksi (tutup kas & gerakan kas) sekaligus
+     * visibilitas tombolnya, supaya keduanya tidak bisa melenceng.
      */
+    private function sessionPermission(ShiftSession $session): string
+    {
+        $userId = auth()->id();
+
+        return $userId !== null && (int) $session->user_id === (int) $userId
+            ? 'shifts.sessions.close'
+            : 'shifts.sessions.close.any';
+    }
+
+    private function authorizeSession(ShiftSession $session): void
+    {
+        $this->authorize($this->sessionPermission($session));
+    }
+
     public function canManageSession(ShiftSession $session): bool
     {
-        $user = auth()->user();
-
-        if (! $user) {
-            return false;
-        }
-
-        if ((int) $session->user_id === (int) $user->id) {
-            return $user->can('shifts.sessions.close');
-        }
-
-        return $user->can('shifts.sessions.close.any');
+        return (bool) auth()->user()?->can($this->sessionPermission($session));
     }
 
     /** @return array{0: ShiftCashMovement, 1: ShiftSession} */
