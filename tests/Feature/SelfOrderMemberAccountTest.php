@@ -120,7 +120,9 @@ it('auto-logins and redirects to self-order when verifying email with table cont
     ]);
 
     $this
-        ->get(route('members.verify', ['token' => $token]).'?t='.$table->qr_value)
+        // Parameter harus di-encode seperti http_build_query() di MemberVerificationMail,
+        // karena qr_value berisi URL bertanda tangan (?e=..&s=..).
+        ->get(route('members.verify', ['token' => $token]).'?t='.urlencode((string) $table->qr_value))
         ->assertRedirect(route('self-order.home'))
         ->assertSessionHas('dining_table_id', $table->id)
         ->assertSessionHas('customer_ready', true)

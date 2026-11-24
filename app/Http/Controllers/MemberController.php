@@ -7,6 +7,7 @@ use App\Models\DiningTable;
 use App\Models\Member;
 use App\Models\MemberRegion;
 use App\Models\Region;
+use App\Services\SelfOrder\TableQrSigner;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Mail;
@@ -17,6 +18,12 @@ class MemberController extends Controller
 {
     public function register(Request $request): RedirectResponse
     {
+        // Normalisasi dulu supaya unique:members,phone memeriksa format yang
+        // benar-benar disimpan (0812... dan 62812... adalah orang yang sama).
+        $request->merge([
+            'phone' => $this->normalizePhone($request->input('phone')),
+        ]);
+
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'email', 'max:255', 'unique:members,email'],
@@ -111,7 +118,11 @@ class MemberController extends Controller
     }
 
     /**
-     * Menerima nilai `t` berupa qr_value lama, URL QR bertanda tangan, atau kode QR saja.
+     * Menerima nilai `t` berupa URL QR bertanda tangan, atau kode QR lama yang
+     * hanya diizinkan saat SELF_ORDER_ALLOW_LEGACY_QR=true.
+     *
+     * Verifikasinya sama dengan TableQrController supaya TTL/tanda tangan QR
+     * tidak bisa dilewati lewat tautan verifikasi email.
      */
     protected function resolveTableFromQrInput(string $value): ?DiningTable
     {
@@ -120,17 +131,53 @@ class MemberController extends Controller
             return null;
         }
 
+        $code = $value;
+        $signature = null;
+        $expires = null;
+
+        $queryString = (string) parse_url($value, PHP_URL_QUERY);
+        if ($queryString === '' && str_contains($value, '?')) {
+            $queryString = explode('?', $value, 2)[1];
+        }
+
+        if ($queryString !== '') {
+            $query = [];
+            parse_str($queryString, $query);
+            $signature = $query['s'] ?? null;
+            $expires = $query['e'] ?? null;
+        }
+
+        if (str_contains($value, '/t/')) {
+            $code = basename((string) parse_url($value, PHP_URL_PATH));
+        } else {
+            $code = explode('?', $value)[0];
+        }
+
+        $signer = app(TableQrSigner::class);
+        $hasSignature = is_string($signature) && $signature !== '';
+
+        if ($hasSignature) {
+            // URL QR modern: HMAC + masa berlaku wajib valid.
+            if (! $signer->isValid($code, $expires, $signature)) {
+                return null;
+            }
+
+            $id = \decode_qr_code($code);
+
+            return $id ? DiningTable::query()->find((int) $id) : null;
+        }
+
+        // Nilai lama tanpa tanda tangan hanya diterima bila persis sama dengan
+        // qr_value yang tersimpan (tabel belum di-regenerate sejak fitur TTL).
+        // Kode QR hasil decode yang tidak tersimpan tidak lagi diterima di
+        // jalur ini, jadi ID meja tidak bisa ditebak dari foto/tebakan lama.
         $direct = DiningTable::query()->where('qr_value', $value)->first();
         if ($direct) {
             return $direct;
         }
 
-        $code = $value;
-        if (str_contains($value, '/t/')) {
-            $path = (string) parse_url($value, PHP_URL_PATH);
-            $code = basename($path);
-        } else {
-            $code = explode('?', $value)[0];
+        if (! $signer->isLegacyAllowed()) {
+            return null;
         }
 
         $id = \decode_qr_code($code);
