@@ -258,6 +258,64 @@ test('cash sessions page query count stays flat as live sessions grow', function
     expect($large)->toBe($small);
 });
 
+/**
+ * Sesi tertutup dengan sejumlah gerakan kas: jalur modal gerakan kas. Sesi
+ * harus tertutup supaya view memanggil isReversed() untuk tiap baris.
+ */
+function shiftSessionWithMovements(ShiftSessionService $service, int $count): ShiftSession
+{
+    $cashier = User::factory()->create();
+    $session = $service->open($cashier, null, 100000);
+
+    foreach (range(1, $count) as $i) {
+        $service->recordMovement($session, 'in', 5000 * $i, null, null, $cashier);
+    }
+
+    return $service->close($session, 100000, $cashier);
+}
+
+/**
+ * Jumlah query satu render halaman dengan modal gerakan kas terbuka. Satu
+ * pembukaan pemanasan dimuat lebih dulu supaya query cache peran/izin tidak
+ * ikut terhitung.
+ */
+function shiftMovementModalQueries(ShiftSession $session, User $user): int
+{
+    $open = fn () => Livewire::actingAs($user)->test(ShiftSessionsPage::class)
+        ->call('openMovementModal', $session->id)
+        ->assertOk();
+
+    $open();
+
+    return shiftQueryCount($open);
+}
+
+test('cash movement modal query count stays flat as movements grow', function () {
+    $single = shiftSessionWithMovements($this->service, 1);
+    $many = shiftSessionWithMovements($this->service, 6);
+
+    $small = shiftMovementModalQueries($single, $this->admin);
+    $large = shiftMovementModalQueries($many, $this->admin);
+
+    // Enam gerakan kas tidak boleh menambah query dibanding satu gerakan:
+    // relasi modal di-eager-load, jadi isReversed() per baris tidak query.
+    expect($large)->toBe($small);
+});
+
+test('cash movement modal eager loads reversal but not the unused creator relation', function () {
+    $session = shiftSessionWithMovements($this->service, 1);
+
+    $component = Livewire::actingAs($this->admin)->test(ShiftSessionsPage::class)
+        ->call('openMovementModal', $session->id)
+        ->assertOk();
+
+    $movement = $component->viewData('movementMovements')->first();
+
+    // reversal dipakai isReversed(); createdBy tidak dibaca view mana pun.
+    expect($movement->relationLoaded('reversal'))->toBeTrue()
+        ->and($movement->relationLoaded('createdBy'))->toBeFalse();
+});
+
 test('shift report query count stays flat as live sessions grow', function () {
     shiftReconciliationScenario($this->service);
     shiftLiveSessions($this->service, 1);
