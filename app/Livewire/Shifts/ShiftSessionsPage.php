@@ -327,10 +327,7 @@ class ShiftSessionsPage extends Component
 
         $activeSession = $sessionService->activeFor(auth()->user());
 
-        $summaries = [];
-        foreach ($sessions as $session) {
-            $summaries[(int) $session->id] = $sessionService->reconciliation($session);
-        }
+        $summaries = $sessionService->reconciliations($sessions->getCollection());
 
         $movementSession = $this->movementSessionId
             ? ShiftSession::query()->with(['user', 'shift', 'cashMovements.createdBy', 'cashMovements.reversal'])->find($this->movementSessionId)

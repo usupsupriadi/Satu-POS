@@ -100,16 +100,14 @@ class ShiftReportPage extends Component
 
         $rows = $this->baseQuery()->orderByDesc('opened_at')->paginate(25);
 
-        $summaries = [];
-        foreach ($rows as $row) {
-            $summaries[(int) $row->id] = $sessionService->reconciliation($row);
-        }
+        $summaries = $sessionService->reconciliations($rows->getCollection());
 
         // Total selalu mengikuti angka yang tampil di baris: sesi tertutup
         // memakai snapshot saat penutupan, sesi terbuka memakai hitungan live.
         $allRows = (clone $this->baseQuery())
             ->get(['id', 'status', 'opening_cash', 'expected_cash', 'closing_cash', 'variance', 'summary_snapshot']);
-        $allSummaries = $allRows->map(fn (ShiftSession $session) => $sessionService->reconciliation($session));
+        $allSummaryMap = $sessionService->reconciliations($allRows);
+        $allSummaries = collect($allSummaryMap);
 
         $totals = [
             'sessions' => $allSummaries->count(),

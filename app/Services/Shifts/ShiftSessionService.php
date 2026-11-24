@@ -175,6 +175,90 @@ class ShiftSessionService
     }
 
     /**
+     * Versi batch dari reconciliation() untuk daftar/laporan: sesi yang butuh
+     * hitungan live diambil dengan dua query agregat, bukan tujuh query per
+     * sesi.
+     *
+     * @param  iterable<ShiftSession>  $sessions
+     * @return array<int, array{transaction_count: int, total_sales: int, cash_sales: int, non_cash_sales: int, cash_refunds: int, cash_movements_in: int, cash_movements_out: int, cash_movement_count: int, expected_cash: int, closing_cash: int|null, variance: int|null}>
+     */
+    public function reconciliations(iterable $sessions): array
+    {
+        $summaries = [];
+        $live = [];
+
+        foreach ($sessions as $session) {
+            if (! $session->isOpen() && is_array($session->summary_snapshot)) {
+                $summary = $this->closedSummary($session);
+                $summary['expected_cash'] = $session->expected_cash ?? $summary['expected_cash'];
+                $summary['closing_cash'] = $session->closing_cash;
+                $summary['variance'] = $session->variance;
+                $summaries[(int) $session->id] = $summary;
+            } else {
+                $live[(int) $session->id] = $session;
+            }
+        }
+
+        if ($live === []) {
+            return $summaries;
+        }
+
+        $transactionTotals = Transaction::query()
+            ->whereIn('shift_session_id', array_keys($live))
+            ->whereIn('payment_status', self::SETTLED_PAYMENT_STATUSES)
+            ->groupBy('shift_session_id')
+            ->selectRaw('shift_session_id, COUNT(*) as transaction_count, COALESCE(SUM(total), 0) as total_sales')
+            ->selectRaw("COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN total ELSE 0 END), 0) as cash_sales")
+            ->selectRaw("COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN refunded_amount ELSE 0 END), 0) as cash_refunds")
+            ->toBase()
+            ->get()
+            ->keyBy('shift_session_id');
+
+        $movementTotals = ShiftCashMovement::query()
+            ->whereIn('shift_session_id', array_keys($live))
+            ->groupBy('shift_session_id')
+            ->selectRaw('shift_session_id, COUNT(*) as movement_count')
+            ->selectRaw("COALESCE(SUM(CASE WHEN type = 'in' THEN amount ELSE 0 END), 0) as movements_in")
+            ->selectRaw("COALESCE(SUM(CASE WHEN type = 'out' THEN amount ELSE 0 END), 0) as movements_out")
+            ->toBase()
+            ->get()
+            ->keyBy('shift_session_id');
+
+        foreach ($live as $id => $session) {
+            $transactions = $transactionTotals->get($id);
+            $movements = $movementTotals->get($id);
+
+            $totalSales = (int) ($transactions->total_sales ?? 0);
+            $cashSales = (int) ($transactions->cash_sales ?? 0);
+            $cashRefunds = (int) ($transactions->cash_refunds ?? 0);
+            $movementsIn = (int) ($movements->movements_in ?? 0);
+            $movementsOut = (int) ($movements->movements_out ?? 0);
+
+            $summary = [
+                'transaction_count' => (int) ($transactions->transaction_count ?? 0),
+                'total_sales' => $totalSales,
+                'cash_sales' => $cashSales,
+                'non_cash_sales' => $totalSales - $cashSales,
+                'cash_refunds' => $cashRefunds,
+                'cash_movements_in' => $movementsIn,
+                'cash_movements_out' => $movementsOut,
+                'cash_movement_count' => (int) ($movements->movement_count ?? 0),
+                'expected_cash' => (int) $session->opening_cash + $cashSales - $cashRefunds + $movementsIn - $movementsOut,
+                'closing_cash' => $session->isOpen() ? null : $session->closing_cash,
+                'variance' => $session->isOpen() ? null : $session->variance,
+            ];
+
+            if (! $session->isOpen()) {
+                $summary['expected_cash'] = $session->expected_cash ?? $summary['expected_cash'];
+            }
+
+            $summaries[$id] = $summary;
+        }
+
+        return $summaries;
+    }
+
+    /**
      * Ringkasan tersimpan untuk sesi tertutup. Sesi lama yang belum punya
      * snapshot dihitung live sebagai fallback.
      *
