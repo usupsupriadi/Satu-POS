@@ -1,13 +1,12 @@
 import './bootstrap';
 import './realtime';
-import ApexCharts from 'apexcharts';
 import flatpickr from 'flatpickr';
 import 'flatpickr/dist/flatpickr.min.css';
-import { Calendar } from '@fullcalendar/core';
 
-window.ApexCharts = ApexCharts;
+// ApexCharts diimpor di dalam modul chart (chart-2/chart-3) supaya hanya
+// diunduh pada halaman yang benar-benar punya chart. FullCalendar dibuang
+// dari bundle global karena tidak dipakai view mana pun.
 window.flatpickr = flatpickr;
-window.FullCalendar = Calendar;
 
 const applyThemeFromStorage = () => {
     const savedTheme = localStorage.getItem('theme');

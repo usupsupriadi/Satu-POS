@@ -1,3 +1,8 @@
+import ApexCharts from 'apexcharts';
+
+// Diekspos global supaya modul chart lain (dan skrip lama) tetap menemukannya,
+// tetapi hanya diunduh ketika halaman memang punya chart.
+window.ApexCharts = ApexCharts;
 
 export const initChartTwo = () => {
     const chartElement = document.querySelector('#chartTwo');
