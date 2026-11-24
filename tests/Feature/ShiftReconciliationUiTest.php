@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\Shifts\ShiftSessionService;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Livewire\Livewire;
 
 uses(RefreshDatabase::class);
@@ -157,4 +158,75 @@ test('batch reconciliations match per-session reconciliation', function () {
     foreach ($sessions as $session) {
         expect($batch[(int) $session->id])->toBe($this->service->reconciliation($session));
     }
+});
+
+function shiftQueryCount(Closure $callback): int
+{
+    DB::flushQueryLog();
+    DB::enableQueryLog();
+
+    try {
+        $callback();
+    } finally {
+        $queries = count(DB::getQueryLog());
+        DB::disableQueryLog();
+        DB::flushQueryLog();
+    }
+
+    return $queries;
+}
+
+/**
+ * Sesi terbuka dengan penjualan tunai dan satu gerakan kas: jalur live yang
+ * paling mahal bila diringkas per baris.
+ */
+function shiftLiveSessions(ShiftSessionService $service, int $count): void
+{
+    for ($i = 0; $i < $count; $i++) {
+        $cashier = User::factory()->create();
+        $session = $service->open($cashier, null, 100000);
+        shiftRecordCashSale($session, 20000 + $i * 1000);
+        $service->recordMovement($session, 'in', 5000, null, null, $cashier);
+    }
+}
+
+test('cash sessions page summarizes live sessions with aggregate queries only', function () {
+    shiftReconciliationScenario($this->service);
+    shiftLiveSessions($this->service, 6);
+
+    $rows = ShiftSession::query()->orderBy('id')->get();
+
+    $batchQueries = shiftQueryCount(fn () => $this->service->reconciliations($rows));
+    $perRowQueries = shiftQueryCount(fn () => $rows->each(fn (ShiftSession $session) => $this->service->reconciliation($session)));
+    $pageQueries = shiftQueryCount(fn () => Livewire::actingAs($this->admin)->test(ShiftSessionsPage::class)->assertOk());
+
+    // 7 sesi live x 7 query cashSummary(); sesi tertutup bersnapshot tanpa query.
+    // Terukur: batch 2 query, per baris 49 query, render halaman 14 query.
+    expect($batchQueries)->toBe(2)
+        ->and($perRowQueries)->toBe(49)
+        ->and($pageQueries)->toBeLessThan($perRowQueries)
+        // Batas longgar: gagal bila halaman kembali merangkum per baris.
+        ->and($pageQueries)->toBeLessThan(30);
+});
+
+test('shift report summarizes all rows with aggregate queries only', function () {
+    shiftReconciliationScenario($this->service);
+    shiftLiveSessions($this->service, 6);
+
+    $rows = ShiftSession::query()->orderBy('id')->get();
+
+    $batchQueries = shiftQueryCount(function () use ($rows): void {
+        $this->service->reconciliations($rows);
+        $this->service->reconciliations($rows);
+    });
+    $perRowQueries = shiftQueryCount(fn () => $rows->each(fn (ShiftSession $session) => $this->service->reconciliation($session)));
+    $pageQueries = shiftQueryCount(fn () => Livewire::actingAs($this->admin)->test(ShiftReportPage::class)->assertOk());
+
+    // Laporan merangkum baris dan total: dua pemanggilan batch = 4 query agregat.
+    // Terukur: batch 4 query, per baris 49 query, render halaman 22 query.
+    expect($batchQueries)->toBe(4)
+        ->and($perRowQueries)->toBe(49)
+        ->and($pageQueries)->toBeLessThan($perRowQueries)
+        // Batas longgar: gagal bila halaman kembali merangkum per baris.
+        ->and($pageQueries)->toBeLessThan(30);
 });
