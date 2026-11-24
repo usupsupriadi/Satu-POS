@@ -165,7 +165,7 @@
                                 <p class="text-xs text-gray-500 dark:text-gray-400">{{ $row->created_at?->format('d/m/Y H:i') }}</p>
                             </td>
                             <td class="px-5 py-4 text-right">
-                                <p class="text-sm text-gray-800 dark:text-white/90">{{ number_format((int) $row->times_redeemed, 0, ',', '.') }}</p>
+                                <p class="text-sm text-gray-800 dark:text-white/90">{{ number_format((int) ($row->paid_redemptions_count ?? 0), 0, ',', '.') }}</p>
                             </td>
                             <td class="px-5 py-4 text-right">
                                 <span class="rounded-full px-2 py-0.5 text-theme-xs font-medium {{ $row->is_active ? 'bg-success-50 text-success-600 dark:bg-success-500/15 dark:text-success-500' : 'bg-gray-50 text-gray-700 dark:bg-gray-500/15 dark:text-gray-300' }}">

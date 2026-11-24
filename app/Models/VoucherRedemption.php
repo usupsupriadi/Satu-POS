@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -19,6 +20,7 @@ class VoucherRedemption extends Model
         'discount_amount',
         'snapshot',
         'redeemed_at',
+        'paid_at',
     ];
 
     protected function casts(): array
@@ -27,7 +29,17 @@ class VoucherRedemption extends Model
             'discount_amount' => 'integer',
             'snapshot' => 'array',
             'redeemed_at' => 'datetime',
+            'paid_at' => 'datetime',
         ];
+    }
+
+    /**
+     * Redemption yang transaksinya benar-benar lunas. Reservasi untuk order
+     * yang belum dibayar tidak termasuk supaya laporan tidak menghitungnya.
+     */
+    public function scopePaid(Builder $query): Builder
+    {
+        return $query->whereNotNull('paid_at');
     }
 
     public function campaign(): BelongsTo
@@ -48,5 +60,10 @@ class VoucherRedemption extends Model
     public function member(): BelongsTo
     {
         return $this->belongsTo(Member::class);
+    }
+
+    public function isPaid(): bool
+    {
+        return $this->paid_at !== null;
     }
 }

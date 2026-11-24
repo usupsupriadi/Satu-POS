@@ -35,10 +35,16 @@ class VoucherCampaignsPage extends Component
         $daysBeforeExpiry = max(0, (int) ($setting->voucher_alert_days_before_expiry ?? 7));
         $quotaThreshold = max(0, (int) ($setting->voucher_alert_quota_threshold ?? 10));
 
+        // `times_redeemed` tetap dipakai untuk sisa kuota (reservasi order
+        // pending ikut memakai kuota), sedangkan kolom pemakaian/diskon hanya
+        // menghitung redemption yang sudah lunas.
         $query = VoucherCampaign::query()
-            ->withCount(['codes', 'redemptions'])
+            ->withCount([
+                'codes',
+                'redemptions as paid_redemptions_count' => fn (Builder $q) => $q->paid(),
+            ])
             ->withSum('codes', 'times_redeemed')
-            ->withSum('redemptions', 'discount_amount')
+            ->withSum(['redemptions as paid_discount_sum' => fn (Builder $q) => $q->paid()], 'discount_amount')
             ->when(trim($this->search) !== '', function (Builder $q) {
                 $term = '%'.trim($this->search).'%';
                 $q->where(function (Builder $w) use ($term) {

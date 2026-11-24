@@ -92,6 +92,7 @@ class VoucherCodesPage extends Component
 
         $query = VoucherCode::query()
             ->where('voucher_campaign_id', $this->campaignId)
+            ->withCount(['redemptions as paid_redemptions_count' => fn (Builder $q) => $q->paid()])
             ->orderByDesc('created_at');
 
         return response()->streamDownload(function () use ($query) {
@@ -102,7 +103,7 @@ class VoucherCodesPage extends Component
                     fputcsv($out, [
                         (string) $row->code,
                         (int) $row->is_active,
-                        (int) $row->times_redeemed,
+                        (int) ($row->paid_redemptions_count ?? 0),
                         (string) $row->created_at,
                     ]);
                 }
@@ -139,6 +140,7 @@ class VoucherCodesPage extends Component
 
         $codes = VoucherCode::query()
             ->where('voucher_campaign_id', $this->campaignId)
+            ->withCount(['redemptions as paid_redemptions_count' => fn (Builder $q) => $q->paid()])
             ->when(trim($this->search) !== '', function (Builder $q) {
                 $term = '%'.trim($this->search).'%';
                 $q->where('code', 'like', $term);

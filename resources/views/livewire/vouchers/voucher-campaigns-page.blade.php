@@ -151,11 +151,11 @@
                                 <p class="text-sm text-gray-800 dark:text-white/90">{{ number_format((int) ($c->codes_count ?? 0), 0, ',', '.') }}</p>
                             </td>
                             <td class="px-5 py-4 text-right">
-                                <p class="text-sm text-gray-800 dark:text-white/90">{{ number_format((int) ($c->redemptions_count ?? 0), 0, ',', '.') }}</p>
+                                <p class="text-sm text-gray-800 dark:text-white/90">{{ number_format((int) ($c->paid_redemptions_count ?? 0), 0, ',', '.') }}</p>
                             </td>
                             <td class="px-5 py-4 text-right">
                                 <p class="text-sm text-gray-800 dark:text-white/90">
-                                    {{ (int) ($c->redemptions_sum_discount_amount ?? 0) > 0 ? 'Rp'.number_format((int) $c->redemptions_sum_discount_amount, 0, ',', '.') : '-' }}
+                                    {{ (int) ($c->paid_discount_sum ?? 0) > 0 ? 'Rp'.number_format((int) $c->paid_discount_sum, 0, ',', '.') : '-' }}
                                 </p>
                             </td>
                             <td class="px-5 py-4 text-right">

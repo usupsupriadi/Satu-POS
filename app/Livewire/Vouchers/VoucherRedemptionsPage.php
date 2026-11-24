@@ -103,7 +103,7 @@ class VoucherRedemptionsPage extends Component
     {
         $filename = 'riwayat-pemakaian-voucher-'.now()->format('Ymd_His').'.csv';
 
-        $query = $this->baseQuery()->orderByDesc('redeemed_at');
+        $query = $this->baseQuery()->orderByDesc('paid_at');
 
         return response()->streamDownload(function () use ($query) {
             $out = fopen('php://output', 'w');
@@ -111,7 +111,7 @@ class VoucherRedemptionsPage extends Component
             $query->chunk(500, function ($rows) use ($out) {
                 foreach ($rows as $row) {
                     fputcsv($out, [
-                        (string) $row->redeemed_at,
+                        (string) $row->paid_at,
                         (string) ($row->campaign?->name ?? ''),
                         (string) ($row->code?->code ?? ''),
                         (int) $row->discount_amount,
@@ -128,11 +128,14 @@ class VoucherRedemptionsPage extends Component
 
     protected function baseQuery(): Builder
     {
+        // Hanya pemakaian yang benar-benar lunas; reservasi untuk order yang
+        // masih pending/kedaluwarsa tidak dihitung sebagai pemakaian.
         return VoucherRedemption::query()
+            ->paid()
             ->with(['campaign', 'code', 'transaction', 'member'])
             ->when($this->campaignId, fn (Builder $q) => $q->where('voucher_campaign_id', (int) $this->campaignId))
-            ->when($this->from, fn (Builder $q) => $q->whereDate('redeemed_at', '>=', (string) $this->from))
-            ->when($this->to, fn (Builder $q) => $q->whereDate('redeemed_at', '<=', (string) $this->to))
+            ->when($this->from, fn (Builder $q) => $q->whereDate('paid_at', '>=', (string) $this->from))
+            ->when($this->to, fn (Builder $q) => $q->whereDate('paid_at', '<=', (string) $this->to))
             ->when(trim($this->codeSearch) !== '', function (Builder $q) {
                 $term = '%'.trim($this->codeSearch).'%';
                 $q->whereHas('code', fn (Builder $c) => $c->where('code', 'like', $term));
@@ -154,7 +157,7 @@ class VoucherRedemptionsPage extends Component
             ->selectRaw('COALESCE(SUM(discount_amount), 0) as sum_discount')
             ->first();
 
-        $rows = $this->baseQuery()->orderByDesc('redeemed_at')->paginate(25);
+        $rows = $this->baseQuery()->orderByDesc('paid_at')->paginate(25);
 
         return view('livewire.vouchers.voucher-redemptions-page', [
             'campaigns' => $campaigns,

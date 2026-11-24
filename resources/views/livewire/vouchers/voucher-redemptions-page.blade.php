@@ -76,7 +76,7 @@
                     @forelse ($rows as $row)
                         <tr>
                             <td class="px-5 py-4">
-                                <p class="text-sm text-gray-800 dark:text-white/90">{{ $row->redeemed_at?->format('d/m/Y H:i') }}</p>
+                                <p class="text-sm text-gray-800 dark:text-white/90">{{ $row->paid_at?->format('d/m/Y H:i') }}</p>
                             </td>
                             <td class="px-5 py-4">
                                 <p class="text-sm text-gray-800 dark:text-white/90">{{ $row->campaign?->name ?? '-' }}</p>
