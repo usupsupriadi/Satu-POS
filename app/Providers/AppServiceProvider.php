@@ -8,7 +8,7 @@ use App\Models\PrinterSource;
 use App\Models\Transaction;
 use App\Observers\DiningTableObserver;
 use App\Observers\TransactionObserver;
-use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
@@ -39,20 +39,25 @@ class AppServiceProvider extends ServiceProvider
         Transaction::observe(TransactionObserver::class);
         DiningTable::observe(DiningTableObserver::class);
 
-        $printerSourcesForJs = [];
-        if (Schema::hasTable('printer_sources')) {
-            $printerSourcesForJs = PrinterSource::query()
-                ->orderBy('name')
-                ->get(['id', 'name', 'type'])
-                ->map(fn (PrinterSource $s) => [
-                    'id' => (int) $s->id,
-                    'name' => (string) $s->name,
-                    'type' => (string) $s->type,
-                ])
-                ->all();
-        }
+        // Dulu dijalankan sebagai View::share sehingga SETIAP request (termasuk
+        // landing page dan self-order publik) menembak schema check + query
+        // printer_sources. Sekarang hanya layout admin yang memuatnya, dan
+        // hasilnya di-cache singkat.
+        View::composer('layouts.app', function (\Illuminate\View\View $view): void {
+            $printerSourcesForJs = Cache::remember('printer_sources_for_js', 300, function (): array {
+                return PrinterSource::query()
+                    ->orderBy('name')
+                    ->get(['id', 'name', 'type'])
+                    ->map(fn (PrinterSource $s) => [
+                        'id' => (int) $s->id,
+                        'name' => (string) $s->name,
+                        'type' => (string) $s->type,
+                    ])
+                    ->all();
+            });
 
-        View::share('printerSourcesForJs', $printerSourcesForJs);
+            $view->with('printerSourcesForJs', is_array($printerSourcesForJs) ? $printerSourcesForJs : []);
+        });
 
         View::composer('layouts.sidebar', function (\Illuminate\View\View $view): void {
             $user = auth()->user();

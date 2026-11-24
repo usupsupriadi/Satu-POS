@@ -6,6 +6,25 @@ use Illuminate\Database\Eloquent\Model;
 
 class Setting extends Model
 {
+    /**
+     * Cache disimpan di container aplikasi (bukan static class) supaya hidup
+     * hanya selama satu siklus aplikasi/request. Sebelumnya setiap pemanggilan
+     * tetap menjalankan query exists() ke database.
+     */
+    private const CACHE_KEY = 'settings.current';
+
+    protected static function booted(): void
+    {
+        $forget = static function (): void {
+            if (app()->bound(self::CACHE_KEY)) {
+                app()->forgetInstance(self::CACHE_KEY);
+            }
+        };
+
+        static::saved($forget);
+        static::deleted($forget);
+    }
+
     protected $fillable = [
         'store_name',
         'phone',
@@ -57,17 +76,14 @@ class Setting extends Model
 
     public static function current(): self
     {
-        static $cached;
-        if ($cached instanceof self) {
-            $key = $cached->getKey();
-            if ($key !== null && self::query()->whereKey($key)->exists()) {
-                return $cached;
-            }
-            $cached = null;
+        if (app()->bound(self::CACHE_KEY)) {
+            return app()->make(self::CACHE_KEY);
         }
-        $cached = self::query()->first();
-        if (! $cached) {
-            $cached = self::query()->create([
+
+        $setting = self::query()->first();
+
+        if (! $setting) {
+            $setting = self::query()->create([
                 'store_name' => (string) config('app.name'),
                 'phone' => null,
                 'address' => null,
@@ -94,6 +110,8 @@ class Setting extends Model
             ]);
         }
 
-        return $cached;
+        app()->instance(self::CACHE_KEY, $setting);
+
+        return $setting;
     }
 }
