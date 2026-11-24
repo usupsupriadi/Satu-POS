@@ -49,9 +49,10 @@ class DashboardPage extends Component
         $this->authorize('dashboard.access');
 
         $now = now();
-        $this->transactionsCount = $this->getTransactionsCount($now);
+        $todayCount = $this->getTransactionsCount($now);
+        $this->transactionsCount = $todayCount;
 
-        [$this->transactionsDeltaPercent, $this->transactionsDeltaUp] = $this->getTransactionsDelta($now);
+        [$this->transactionsDeltaPercent, $this->transactionsDeltaUp] = $this->getTransactionsDelta($now, $todayCount);
 
         $this->todayRevenueAmount = $this->getRevenueBetween($now->copy()->startOfDay(), $now->copy()->endOfDay());
 
@@ -88,7 +89,7 @@ class DashboardPage extends Component
             ->count();
     }
 
-    protected function getTransactionsDelta(Carbon $now): array
+    protected function getTransactionsDelta(Carbon $now, ?int $todayCount = null): array
     {
         $todayStart = $now->copy()->startOfDay();
         $todayEnd = $now->copy()->endOfDay();
@@ -96,9 +97,11 @@ class DashboardPage extends Component
         $yesterdayStart = $todayStart->copy()->subDay();
         $yesterdayEnd = $todayEnd->copy()->subDay();
 
-        $todayCount = Transaction::query()
-            ->whereBetween('created_at', [$todayStart, $todayEnd])
-            ->count();
+        if ($todayCount === null) {
+            $todayCount = Transaction::query()
+                ->whereBetween('created_at', [$todayStart, $todayEnd])
+                ->count();
+        }
 
         $yesterdayCount = Transaction::query()
             ->whereBetween('created_at', [$yesterdayStart, $yesterdayEnd])

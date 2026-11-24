@@ -8,7 +8,9 @@ use Carbon\CarbonImmutable;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Livewire\Attributes\Computed;
 use Livewire\Component;
 
 class SalesProfitReportPage extends Component
@@ -632,23 +634,87 @@ class SalesProfitReportPage extends Component
         });
     }
 
+    /**
+     * Empat agregasi berat dipindah ke computed property + cache singkat, supaya
+     * tidak dihitung ulang pada setiap interaksi Livewire pada halaman ini.
+     */
+    #[Computed]
+    public function metrics(): array
+    {
+        return $this->rememberReport('metrics', fn (): array => $this->buildMetrics());
+    }
+
+    #[Computed]
+    public function dailyRows(): Collection
+    {
+        return $this->rememberReport('daily', function (): Collection {
+            [$from, $to] = $this->dateRange();
+
+            return $this->buildDailyTable($from, $to);
+        });
+    }
+
+    #[Computed]
+    public function topByProfit(): Collection
+    {
+        return $this->topItems()['byProfit'];
+    }
+
+    #[Computed]
+    public function topByRevenue(): Collection
+    {
+        return $this->topItems()['byRevenue'];
+    }
+
+    #[Computed]
+    public function paymentMethods(): Collection
+    {
+        return $this->rememberReport('payment-methods', function (): Collection {
+            [$from, $to] = $this->dateRange();
+
+            return $this->buildPaymentMethods($from, $to, (float) ($this->metrics['current']['revenue'] ?? 0));
+        });
+    }
+
+    private function topItems(): array
+    {
+        return $this->rememberReport('top', function (): array {
+            [$from, $to] = $this->dateRange();
+
+            return $this->buildTopItems($from, $to);
+        });
+    }
+
+    /**
+     * Cache 60 detik per kombinasi filter. Di lingkungan testing cache dilewati
+     * agar data uji selalu segar.
+     */
+    private function rememberReport(string $part, \Closure $callback): mixed
+    {
+        if (app()->environment('testing')) {
+            return $callback();
+        }
+
+        $key = 'reports:sales-profit:'.$part.':'.sha1((string) json_encode([
+            'from' => $this->fromDate,
+            'to' => $this->toDate,
+            'year' => $this->targetYear,
+            'month' => $this->targetMonth,
+        ]));
+
+        return Cache::remember($key, 60, $callback);
+    }
+
     public function render(): View
     {
         $this->authorizePermission('reports.sales');
 
-        [$from, $to] = $this->dateRange();
-
-        $metrics = $this->buildMetrics();
-        $daily = $this->buildDailyTable($from, $to);
-        $top = $this->buildTopItems($from, $to);
-        $paymentMethods = $this->buildPaymentMethods($from, $to, (float) ($metrics['current']['revenue'] ?? 0));
-
         return view('livewire.reports.sales-profit-report-page', [
-            'metrics' => $metrics,
-            'dailyRows' => $daily,
-            'topByProfit' => $top['byProfit'],
-            'topByRevenue' => $top['byRevenue'],
-            'paymentMethods' => $paymentMethods,
+            'metrics' => $this->metrics,
+            'dailyRows' => $this->dailyRows,
+            'topByProfit' => $this->topByProfit,
+            'topByRevenue' => $this->topByRevenue,
+            'paymentMethods' => $this->paymentMethods,
             'chartSeries' => $this->chartSeries,
             'chartCategories' => $this->chartCategories,
         ])->layout('layouts.app', ['title' => $this->title]);
