@@ -190,6 +190,14 @@ function shiftLiveSessions(ShiftSessionService $service, int $count): void
     }
 }
 
+/**
+ * Jumlah query saat merender satu halaman Livewire penuh.
+ */
+function shiftPageQueries(string $page, User $user): int
+{
+    return shiftQueryCount(fn () => Livewire::actingAs($user)->test($page)->assertOk());
+}
+
 test('cash sessions page summarizes live sessions with aggregate queries only', function () {
     shiftReconciliationScenario($this->service);
     shiftLiveSessions($this->service, 6);
@@ -223,10 +231,44 @@ test('shift report summarizes all rows with aggregate queries only', function ()
     $pageQueries = shiftQueryCount(fn () => Livewire::actingAs($this->admin)->test(ShiftReportPage::class)->assertOk());
 
     // Laporan merangkum baris dan total: dua pemanggilan batch = 4 query agregat.
-    // Terukur: batch 4 query, per baris 49 query, render halaman 22 query.
+    // Terukur: batch 4 query, per baris 49 query, render halaman 14 query.
     expect($batchQueries)->toBe(4)
         ->and($perRowQueries)->toBe(49)
         ->and($pageQueries)->toBeLessThan($perRowQueries)
         // Batas ketat di angka terukur: gagal bila halaman menambah query.
-        ->and($pageQueries)->toBeLessThanOrEqual(22);
+        ->and($pageQueries)->toBeLessThanOrEqual(14);
+});
+
+test('cash sessions page query count stays flat as live sessions grow', function () {
+    shiftReconciliationScenario($this->service);
+    shiftLiveSessions($this->service, 1);
+
+    // Render pemanasan: muat cache peran/izin agar tidak terhitung di baseline.
+    shiftPageQueries(ShiftSessionsPage::class, $this->admin);
+
+    $small = shiftPageQueries(ShiftSessionsPage::class, $this->admin);
+
+    shiftLiveSessions($this->service, 6);
+
+    $large = shiftPageQueries(ShiftSessionsPage::class, $this->admin);
+
+    // Tujuh sesi live tidak boleh menambah query dibanding satu sesi live.
+    expect($large)->toBe($small);
+});
+
+test('shift report query count stays flat as live sessions grow', function () {
+    shiftReconciliationScenario($this->service);
+    shiftLiveSessions($this->service, 1);
+
+    // Render pemanasan: muat cache peran/izin agar tidak terhitung di baseline.
+    shiftPageQueries(ShiftReportPage::class, $this->admin);
+
+    $small = shiftPageQueries(ShiftReportPage::class, $this->admin);
+
+    shiftLiveSessions($this->service, 6);
+
+    $large = shiftPageQueries(ShiftReportPage::class, $this->admin);
+
+    // Relasi kasir/shift di-eager-load, jadi jumlah baris tidak menambah query.
+    expect($large)->toBe($small);
 });

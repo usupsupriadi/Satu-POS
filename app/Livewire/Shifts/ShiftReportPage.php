@@ -98,7 +98,10 @@ class ShiftReportPage extends Component
     {
         $this->authorize('shifts.reports.view');
 
-        $rows = $this->baseQuery()->orderByDesc('opened_at')->paginate(25);
+        $rows = $this->baseQuery()
+            ->with(['user', 'shift'])
+            ->orderByDesc('opened_at')
+            ->paginate(25);
 
         $summaries = $sessionService->reconciliations($rows->getCollection());
 
