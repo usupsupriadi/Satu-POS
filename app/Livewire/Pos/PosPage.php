@@ -22,6 +22,7 @@ use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Livewire\Attributes\Computed;
 use Livewire\Component;
 
 class PosPage extends Component
@@ -146,10 +147,6 @@ class PosPage extends Component
 
     public int $cashChange = 0;
 
-    public array $productCards = [];
-
-    public array $variantStockStatuses = [];
-
     public function mount(): void
     {
         $this->authorize('pos.access');
@@ -188,31 +185,7 @@ class PosPage extends Component
             $this->activeTab = $tab;
         }
 
-        if ($this->activeTab === 'pos') {
-            $this->refreshProductCards();
-        }
-
         $this->recalculateTotals();
-    }
-
-    public function updatedSearch(): void
-    {
-        if ($this->activeTab !== 'pos') {
-            return;
-        }
-
-        $this->refreshProductCards();
-        $this->loadVariantStockStatuses();
-    }
-
-    public function updatedSelectedCategoryId(): void
-    {
-        if ($this->activeTab !== 'pos') {
-            return;
-        }
-
-        $this->refreshProductCards();
-        $this->loadVariantStockStatuses();
     }
 
     public function updatedVoucherCodeInput(): void
@@ -312,17 +285,18 @@ class PosPage extends Component
         }
 
         $this->activeTab = $tab;
-
-        if ($tab === 'pos') {
-            $this->refreshProductCards();
-            $this->loadVariantStockStatuses();
-        }
     }
 
-    public function loadVariantStockStatuses(): void
+    /**
+     * Status stok dihitung per request dari keranjang katalog yang sedang
+     * tampil, bukan disimpan sebagai properti publik (dulu ikut terkirim di
+     * setiap payload Livewire).
+     */
+    #[Computed]
+    public function variantStockStatuses(): array
     {
         if ($this->activeTab !== 'pos') {
-            return;
+            return [];
         }
 
         $variantIds = [];
@@ -347,12 +321,17 @@ class PosPage extends Component
 
         $variantIds = array_values(array_unique($variantIds));
 
-        $this->variantStockStatuses = app(VariantIngredientStockStatusService::class)
+        return app(VariantIngredientStockStatusService::class)
             ->statusesForVariantIds($variantIds);
     }
 
-    private function refreshProductCards(): void
+    #[Computed]
+    public function productCards(): array
     {
+        if ($this->activeTab !== 'pos') {
+            return [];
+        }
+
         $term = trim($this->search);
 
         $products = Product::query()
@@ -373,7 +352,7 @@ class PosPage extends Component
             ->limit(120)
             ->get(['id', 'name', 'image', 'is_package', 'package_type']);
 
-        $this->productCards = $products->map(function (Product $product): array {
+        return $products->map(function (Product $product): array {
             $packageType = (string) ($product->package_type ?? 'simple');
             $isPackage = (bool) $product->is_package;
 
@@ -1316,7 +1295,7 @@ class PosPage extends Component
             $manualNote = $this->manualDiscountAmount > 0 ? $this->manualDiscountNote : null;
 
             if (! $trx) {
-                $trx = Transaction::query()->create([
+                $trx = Transaction::createWithUniqueCode([
                     'code' => Transaction::generateUniqueCode(),
                     'member_id' => $this->memberId,
                     'channel' => 'pos',
@@ -1491,6 +1470,22 @@ class PosPage extends Component
             $this->applyVariantPricesToCartItems();
         }
 
+        // Properti publik bisa diubah dari browser ($wire.set), jadi nilai pajak
+        // dan pembulatan selalu dikembalikan ke pengaturan toko kecuali user
+        // memang berizin mengubah pengaturan (dan perubahannya diaudit).
+        $setting = Setting::current();
+        $defaultTaxRate = (float) $setting->tax_rate;
+        $taxOverride = abs(((float) $this->taxRate) - $defaultTaxRate) > 0.0001;
+
+        if ($taxOverride && ! (bool) auth()->user()?->can('settings.edit')) {
+            $this->taxRate = $defaultTaxRate;
+            $taxOverride = false;
+            $this->dispatch('toast', type: 'warning', message: 'Tarif pajak mengikuti pengaturan toko.');
+        }
+
+        $this->roundingBase = max(0, (int) $setting->rounding_base);
+        $this->discountAppliesBeforeTax = (bool) ($setting->discount_applies_before_tax ?? true);
+
         $this->recalculateTotals();
 
         if (! $this->ensureManualDiscountValid()) {
@@ -1555,7 +1550,7 @@ class PosPage extends Component
             return;
         }
 
-        DB::transaction(function () use ($validated, $isCash, $cashReceived, $voucherResolved, $member, $guestId, $shiftSessionId, &$trxId, &$previousPaymentStatus, &$checkoutBlockedMessage) {
+        DB::transaction(function () use ($validated, $isCash, $cashReceived, $voucherResolved, $member, $guestId, $shiftSessionId, $taxOverride, &$trxId, &$previousPaymentStatus, &$checkoutBlockedMessage) {
             $trx = $this->editingTransactionId
                 ? Transaction::query()->whereKey($this->editingTransactionId)->lockForUpdate()->first()
                 : null;
@@ -1615,13 +1610,11 @@ class PosPage extends Component
                     $voucherCampaignId = (int) $locked->voucher_campaign_id;
                     $voucherCodeId = (int) $locked->id;
                     $voucherCode = (string) $locked->code;
-
-                    $locked->increment('times_redeemed');
                 }
             }
 
             if (! $trx) {
-                $trx = Transaction::query()->create([
+                $trx = Transaction::createWithUniqueCode([
                     'code' => Transaction::generateUniqueCode(),
                     'member_id' => $this->memberId,
                     'channel' => 'pos',
@@ -1739,26 +1732,49 @@ class PosPage extends Component
 
             if ($voucherCodeId && $voucherCampaignId) {
                 $campaign = is_array($voucherResolved) ? ($voucherResolved['campaign'] ?? null) : null;
-                VoucherRedemption::query()->create([
-                    'voucher_campaign_id' => $voucherCampaignId,
-                    'voucher_code_id' => $voucherCodeId,
-                    'transaction_id' => (int) $trx->id,
-                    'member_id' => $this->memberId,
-                    'guest_identifier' => $member ? null : $guestId,
-                    'discount_amount' => $this->voucherDiscountAmount,
-                    'snapshot' => [
-                        'campaign' => [
-                            'id' => $voucherCampaignId,
-                            'name' => $campaign?->name ?? null,
-                            'discount_type' => $campaign?->discount_type ?? null,
-                            'discount_value' => $campaign?->discount_value ?? null,
-                            'max_discount_amount' => $campaign?->max_discount_amount ?? null,
-                            'min_eligible_subtotal' => $campaign?->min_eligible_subtotal ?? null,
-                            'is_member_only' => (bool) ($campaign?->is_member_only ?? false),
+
+                // Order self-order online sudah mereservasi voucher saat dibuat;
+                // jangan buat baris kedua (unique transaction_id) atau menambah
+                // times_redeemed dua kali.
+                $existingRedemption = VoucherRedemption::query()
+                    ->where('transaction_id', (int) $trx->id)
+                    ->first();
+
+                if ($existingRedemption) {
+                    $existingRedemption->forceFill([
+                        'discount_amount' => $this->voucherDiscountAmount,
+                        'redeemed_at' => $existingRedemption->redeemed_at ?? now(),
+                        'paid_at' => now(),
+                    ])->save();
+                } else {
+                    VoucherCode::query()
+                        ->whereKey($voucherCodeId)
+                        ->increment('times_redeemed');
+
+                    VoucherRedemption::query()->create([
+                        'voucher_campaign_id' => $voucherCampaignId,
+                        'voucher_code_id' => $voucherCodeId,
+                        'transaction_id' => (int) $trx->id,
+                        'member_id' => $this->memberId,
+                        'guest_identifier' => $member ? null : $guestId,
+                        'discount_amount' => $this->voucherDiscountAmount,
+                        'snapshot' => [
+                            'campaign' => [
+                                'id' => $voucherCampaignId,
+                                'name' => $campaign?->name ?? null,
+                                'discount_type' => $campaign?->discount_type ?? null,
+                                'discount_value' => $campaign?->discount_value ?? null,
+                                'max_discount_amount' => $campaign?->max_discount_amount ?? null,
+                                'min_eligible_subtotal' => $campaign?->min_eligible_subtotal ?? null,
+                                'is_member_only' => (bool) ($campaign?->is_member_only ?? false),
+                            ],
                         ],
-                    ],
-                    'redeemed_at' => now(),
-                ]);
+                        'redeemed_at' => now(),
+                        // POS menyimpan transaksi sekaligus lunas, jadi pemakaian
+                        // voucher ini sudah final.
+                        'paid_at' => now(),
+                    ]);
+                }
 
                 TransactionEvent::query()->create([
                     'transaction_id' => (int) $trx->id,
@@ -1802,6 +1818,25 @@ class PosPage extends Component
                 ]);
             }
 
+            // Pesanan yang dibuka dari daftar pending (mis. self-order tunai)
+            // belum punya sesi kas; tautkan ke sesi kasir yang membayarnya
+            // supaya uangnya masuk rekap kas shift.
+            if ($trx->shift_session_id === null && $shiftSessionId !== null) {
+                $trx->forceFill(['shift_session_id' => $shiftSessionId])->save();
+            }
+
+            if ($taxOverride) {
+                TransactionEvent::query()->create([
+                    'transaction_id' => (int) $trx->id,
+                    'actor_user_id' => auth()->id(),
+                    'action' => 'tax_override',
+                    'meta' => [
+                        'tax_rate' => (float) $this->taxRate,
+                        'default_tax_rate' => (float) Setting::current()->tax_rate,
+                    ],
+                ]);
+            }
+
             $previousPaymentStatus = (string) $trx->payment_status;
 
             $trx->forceFill([
@@ -1841,6 +1876,11 @@ class PosPage extends Component
         }
 
         $this->dispatch('toast', type: 'success', message: 'Transaksi berhasil disimpan.');
+
+        if ($trx->inventory_applied_at === null) {
+            $this->dispatch('toast', type: 'warning', message: 'Stok bahan belum terpotong karena resep/BOM produk belum lengkap. Periksa menu Inventory.');
+        }
+
         $this->checkoutModalOpen = false;
         $this->clearCart();
 

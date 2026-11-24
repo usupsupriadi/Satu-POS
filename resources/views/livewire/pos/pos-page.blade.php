@@ -113,7 +113,7 @@
         @if ($activeTab === 'pos')
             <div class="grid grid-cols-1 gap-6 p-2 lg:grid-cols-12">
                 <div class="lg:col-span-8">
-                    <div wire:init="loadVariantStockStatuses" class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+                    <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                         @forelse ($this->productCards as $product)
                             @php
                                 $image = (string) ($product['image'] ?? '');

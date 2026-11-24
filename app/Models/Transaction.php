@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -242,6 +243,36 @@ class Transaction extends Model
             }
         }
 
-        return Str::upper(Str::random($length - 4)).now()->format('His');
+        return Str::upper(Str::random(max(10, $length)));
+    }
+
+    /**
+     * Buat transaksi dan ulangi sekali bila kode hasil generate kebetulan
+     * bentrok dengan unique index (mis. dua kasir checkout bersamaan).
+     */
+    public static function createWithUniqueCode(array $attributes): self
+    {
+        for ($attempt = 1; $attempt <= 3; $attempt++) {
+            try {
+                return self::query()->create($attributes);
+            } catch (QueryException $e) {
+                if ($attempt === 3 || ! self::isUniqueConstraintViolation($e)) {
+                    throw $e;
+                }
+
+                $attributes['code'] = self::generateUniqueCode();
+            }
+        }
+
+        throw new RuntimeException('Gagal membuat kode transaksi unik.');
+    }
+
+    private static function isUniqueConstraintViolation(QueryException $e): bool
+    {
+        $message = strtolower($e->getMessage());
+
+        return str_contains($message, 'unique constraint')
+            || str_contains($message, 'duplicate entry')
+            || (string) $e->getCode() === '23000';
     }
 }
