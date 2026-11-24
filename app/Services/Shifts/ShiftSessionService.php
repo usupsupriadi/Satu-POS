@@ -30,7 +30,6 @@ class ShiftSessionService
         }
 
         return ShiftSession::query()
-            ->with('shift')
             ->where('user_id', $user->id)
             ->open()
             ->latest('opened_at')
