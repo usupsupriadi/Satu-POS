@@ -205,8 +205,8 @@ test('cash sessions page summarizes live sessions with aggregate queries only', 
     expect($batchQueries)->toBe(2)
         ->and($perRowQueries)->toBe(49)
         ->and($pageQueries)->toBeLessThan($perRowQueries)
-        // Batas longgar: gagal bila halaman kembali merangkum per baris.
-        ->and($pageQueries)->toBeLessThan(30);
+        // Batas ketat di angka terukur: gagal bila halaman menambah query.
+        ->and($pageQueries)->toBeLessThanOrEqual(14);
 });
 
 test('shift report summarizes all rows with aggregate queries only', function () {
@@ -227,6 +227,6 @@ test('shift report summarizes all rows with aggregate queries only', function ()
     expect($batchQueries)->toBe(4)
         ->and($perRowQueries)->toBe(49)
         ->and($pageQueries)->toBeLessThan($perRowQueries)
-        // Batas longgar: gagal bila halaman kembali merangkum per baris.
-        ->and($pageQueries)->toBeLessThan(30);
+        // Batas ketat di angka terukur: gagal bila halaman menambah query.
+        ->and($pageQueries)->toBeLessThanOrEqual(22);
 });
