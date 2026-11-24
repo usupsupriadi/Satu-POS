@@ -3,7 +3,9 @@
 namespace App\Services\SelfOrder;
 
 use App\Models\ProductVariant;
+use App\Services\Inventory\VariantIngredientStockStatusService;
 use Illuminate\Support\Collection;
+use Illuminate\Validation\ValidationException;
 
 class SelfOrderCheckoutService
 {
@@ -107,5 +109,43 @@ class SelfOrderCheckoutService
         return hash('sha256', (string) $payload);
     }
 
-    public function assertSufficientIngredientStock(array $items, Collection $variants): void {}
+    /**
+     * Tolak pembayaran online bila stok bahan tidak mencukupi.
+     *
+     * Bahan yang belum punya resep/BOM (missing_bom) sengaja dilewatkan supaya
+     * toko yang belum memakai modul inventory tetap bisa menerima pesanan.
+     */
+    public function assertSufficientIngredientStock(array $items, Collection $variants): void
+    {
+        $variantIds = collect($items)
+            ->map(fn (array $item) => (int) ($item['variant_id'] ?? 0))
+            ->filter(fn (int $id) => $id > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($variantIds === []) {
+            return;
+        }
+
+        $statuses = app(VariantIngredientStockStatusService::class)->statusesForVariantIds($variantIds);
+
+        $shortages = [];
+        foreach ($variantIds as $variantId) {
+            if ((string) ($statuses[$variantId] ?? '') !== 'insufficient') {
+                continue;
+            }
+
+            $variant = $variants->get($variantId);
+            $productName = (string) ($variant?->product?->name ?? 'Item');
+            $variantName = (string) ($variant?->name ?? '');
+            $shortages[] = trim($productName.($variantName !== '' ? ' - '.$variantName : ''));
+        }
+
+        if ($shortages !== []) {
+            throw ValidationException::withMessages([
+                'stock' => 'Stok bahan tidak mencukupi untuk: '.implode(', ', array_unique($shortages)).'.',
+            ]);
+        }
+    }
 }

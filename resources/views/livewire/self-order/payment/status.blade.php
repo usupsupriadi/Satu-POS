@@ -152,10 +152,15 @@
                             <div class="w-full border-t-2 border-dashed border-gray-200"></div>
                         </div>
                         <div class="relative flex justify-center">
-                            <span class="bg-white px-3 text-xs font-semibold text-gray-500">Detail Pesanan</span>
+                            <span class="bg-white px-3 text-xs font-semibold text-gray-500">{{ $detailsVisible ? 'Detail Pesanan' : 'Detail Pesanan (Terbatas)' }}</span>
                         </div>
                     </div>
 
+                    @if (! $detailsVisible)
+                        <div class="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                            <p class="text-xs text-gray-600">Rincian item hanya bisa dilihat dari perangkat yang memesan.</p>
+                        </div>
+                    @else
                     <div class="space-y-2 max-h-64 overflow-y-auto">
                         @foreach($transaction->transactionItems as $it)
                             <div class="flex items-start justify-between p-3 rounded-xl bg-gray-50 border border-gray-200">
@@ -183,6 +188,7 @@
                             </div>
                         @endforeach
                     </div>
+                    @endif
 
                     <div class="relative py-2">
                         <div class="absolute inset-0 flex items-center">
@@ -235,7 +241,7 @@
                     </div>
 
                     <div class="space-y-3 pt-2">
-                        @if(in_array(strtolower($status), ['paid','settled']))
+                        @if($detailsVisible && in_array(strtolower($status), ['paid','settled']))
                             <a href="{{ route('self-order.payment.receipt', ['code' => $transaction->code, 'token' => $transaction->self_order_token]) }}" target="_blank"
                                class="flex w-full items-center justify-center gap-2 rounded-2xl bg-primary-60 hover:bg-primary-70 px-6 py-4 text-white font-bold text-sm">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

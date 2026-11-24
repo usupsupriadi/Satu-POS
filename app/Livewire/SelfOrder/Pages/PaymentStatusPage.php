@@ -14,8 +14,19 @@ class PaymentStatusPage extends Component
 
     public string $status = 'pending';
 
+    /**
+     * Halaman ini bisa dibuka hanya dengan kode transaksi (mis. redirect dari
+     * Midtrans). Detail pesanan dan tautan struk hanya ditampilkan bila
+     * permintaan datang dari perangkat pemesan (token/sesi) atau staf.
+     */
+    public bool $detailsVisible = false;
+
     public function getListeners(): array
     {
+        if (! isset($this->transaction) || ! $this->detailsVisible) {
+            return [];
+        }
+
         $token = (string) ($this->transaction->self_order_token ?? '');
 
         if ($token === '') {
@@ -44,9 +55,30 @@ class PaymentStatusPage extends Component
         }
 
         $this->transaction = $query->firstOrFail();
+        $this->detailsVisible = $this->canViewDetails();
 
         $this->status = (string) $this->transaction->payment_status;
         $this->syncSessionWithStatus();
+    }
+
+    private function canViewDetails(): bool
+    {
+        $trxToken = trim((string) ($this->transaction->self_order_token ?? ''));
+        $requestToken = trim((string) request()->query('token', ''));
+        $sessionToken = trim((string) session('self_order_token', ''));
+
+        if ($trxToken !== '' && ($requestToken === $trxToken || $sessionToken === $trxToken)) {
+            return true;
+        }
+
+        $sessionExternalId = trim((string) session('external_id', ''));
+        if ($sessionExternalId !== '' && hash_equals($sessionExternalId, (string) $this->transaction->external_id)) {
+            return true;
+        }
+
+        $user = auth()->user();
+
+        return (bool) ($user && $user->can('transactions.details'));
     }
 
     public function handlePaymentUpdated(array $payload = []): void

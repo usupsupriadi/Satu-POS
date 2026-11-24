@@ -60,9 +60,7 @@ class CheckoutPage extends Component
         $tableId = session('dining_table_id');
         $this->tableNumber = $tableId ? optional(DiningTable::find($tableId))->table_number : null;
         if (empty($this->cartItems)) {
-            redirect()->route('self-order.payment.cart');
-
-            return;
+            return $this->redirect(route('self-order.payment.cart'));
         }
 
         $this->paymentToken = Str::random(32);

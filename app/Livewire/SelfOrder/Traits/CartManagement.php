@@ -39,9 +39,16 @@ trait CartManagement
 
     public string $voucherMessage = '';
 
+    public const MAX_ITEM_QUANTITY = 99;
+
     public function increment($index)
     {
-        $this->cartItems[$index]['quantity']++;
+        if (! isset($this->cartItems[$index]) || ! is_array($this->cartItems[$index])) {
+            return;
+        }
+
+        $quantity = (int) ($this->cartItems[$index]['quantity'] ?? 0);
+        $this->cartItems[$index]['quantity'] = min(self::MAX_ITEM_QUANTITY, $quantity + 1);
         session(['cart_items' => $this->cartItems]);
         $this->hasUnpaidTransaction = false;
         $this->updateTotals();
@@ -50,8 +57,13 @@ trait CartManagement
 
     public function decrement($index)
     {
-        if ($this->cartItems[$index]['quantity'] > 1) {
-            $this->cartItems[$index]['quantity']--;
+        if (! isset($this->cartItems[$index]) || ! is_array($this->cartItems[$index])) {
+            return;
+        }
+
+        $quantity = (int) ($this->cartItems[$index]['quantity'] ?? 0);
+        if ($quantity > 1) {
+            $this->cartItems[$index]['quantity'] = $quantity - 1;
         }
         session(['cart_items' => $this->cartItems]);
         $this->hasUnpaidTransaction = false;
@@ -64,7 +76,6 @@ trait CartManagement
         if (! isset($this->cartItems[$index])) {
             return;
         }
-
         array_splice($this->cartItems, $index, 1);
         session(['cart_items' => $this->cartItems]);
         $this->hasUnpaidTransaction = false;
