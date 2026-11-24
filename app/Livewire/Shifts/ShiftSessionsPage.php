@@ -330,7 +330,7 @@ class ShiftSessionsPage extends Component
         $summaries = $sessionService->reconciliations($sessions->getCollection());
 
         $movementSession = $this->movementSessionId
-            ? ShiftSession::query()->with(['user', 'shift', 'cashMovements.createdBy', 'cashMovements.reversal'])->find($this->movementSessionId)
+            ? ShiftSession::query()->with(['user', 'shift', 'cashMovements.reversal'])->find($this->movementSessionId)
             : null;
 
         $movementMovements = $movementSession
