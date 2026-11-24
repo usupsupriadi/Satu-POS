@@ -169,6 +169,62 @@ test('reverseMovement requires a reason and allows only one reversal', function 
     expect($movements())->toBe(2);
 });
 
+test('shift sessions page reverses a closed movement only with a reason', function () {
+    $movement = makeClosedMovement(User::factory()->create(), 50000);
+
+    $admin = User::factory()->create();
+    $admin->assignRole('owner');
+
+    Livewire::actingAs($admin)
+        ->test(ShiftSessionsPage::class)
+        ->call('openMovementModal', (int) $movement->shift_session_id)
+        ->assertSet('movementModalOpen', true)
+        ->assertSee('Sesi kas sudah ditutup')
+        ->call('startReversal', (int) $movement->id)
+        ->assertSet('reversalMovementId', (int) $movement->id)
+        ->set('reversalReason', '   ')
+        ->call('confirmReversal')
+        ->assertHasErrors(['reversalReason']);
+
+    expect($movement->fresh()->isReversed())->toBeFalse();
+
+    Livewire::actingAs($admin)
+        ->test(ShiftSessionsPage::class)
+        ->call('startReversal', (int) $movement->id)
+        ->set('reversalReason', 'Salah input setoran')
+        ->call('confirmReversal')
+        ->assertHasNoErrors()
+        ->assertSee('Dibatalkan');
+
+    expect($movement->fresh()->isReversed())->toBeTrue()
+        ->and(ShiftCashMovement::query()->where('shift_session_id', $movement->shift_session_id)->count())->toBe(2);
+});
+
+test('cashier reverses own closed movement but not another cashiers', function () {
+    $cashier = User::factory()->create();
+    $cashier->assignRole('cashier');
+
+    $own = makeClosedMovement($cashier);
+
+    Livewire::actingAs($cashier)
+        ->test(ShiftSessionsPage::class)
+        ->call('startReversal', (int) $own->id)
+        ->set('reversalReason', 'Salah input')
+        ->call('confirmReversal')
+        ->assertHasNoErrors();
+
+    expect($own->fresh()->isReversed())->toBeTrue();
+
+    $other = makeClosedMovement(User::factory()->create());
+
+    Livewire::actingAs($cashier)
+        ->test(ShiftSessionsPage::class)
+        ->call('startReversal', (int) $other->id)
+        ->assertStatus(403);
+
+    expect($other->fresh()->isReversed())->toBeFalse();
+});
+
 test('close stores expected cash including movements', function () {
     $user = User::factory()->create();
     $session = makeOpenSessionFor($user, 100000);

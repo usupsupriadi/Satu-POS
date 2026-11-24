@@ -3,6 +3,7 @@
 namespace App\Livewire\Shifts;
 
 use App\Models\Shift;
+use App\Models\ShiftCashMovement;
 use App\Models\ShiftSession;
 use App\Services\Shifts\ShiftSessionService;
 use Illuminate\Contracts\View\View;
@@ -47,6 +48,10 @@ class ShiftSessionsPage extends Component
     public string $movementCategory = '';
 
     public string $movementNote = '';
+
+    public ?int $reversalMovementId = null;
+
+    public string $reversalReason = '';
 
     public function mount(): void
     {
@@ -178,17 +183,13 @@ class ShiftSessionsPage extends Component
 
         $this->authorizeMovement($session);
 
-        if (! $session->isOpen()) {
-            $this->dispatch('toast', type: 'error', message: 'Sesi kas ini sudah ditutup.');
-
-            return;
-        }
-
         $this->movementSessionId = (int) $session->id;
         $this->movementType = 'in';
         $this->movementAmount = '0';
         $this->movementCategory = '';
         $this->movementNote = '';
+        $this->reversalMovementId = null;
+        $this->reversalReason = '';
         $this->resetValidation();
         $this->movementModalOpen = true;
     }
@@ -197,6 +198,8 @@ class ShiftSessionsPage extends Component
     {
         $this->movementModalOpen = false;
         $this->movementSessionId = null;
+        $this->reversalMovementId = null;
+        $this->reversalReason = '';
         $this->resetValidation();
     }
 
@@ -242,8 +245,7 @@ class ShiftSessionsPage extends Component
 
     public function deleteMovement(int $movementId, ShiftSessionService $sessionService): void
     {
-        $movement = \App\Models\ShiftCashMovement::query()->findOrFail($movementId);
-        $session = ShiftSession::query()->findOrFail((int) $movement->shift_session_id);
+        [$movement, $session] = $this->findMovementSession($movementId);
 
         $this->authorizeMovement($session);
 
@@ -256,6 +258,61 @@ class ShiftSessionsPage extends Component
         }
 
         $this->dispatch('toast', type: 'success', message: 'Gerakan kas dihapus.');
+    }
+
+    public function startReversal(int $movementId): void
+    {
+        [$movement, $session] = $this->findMovementSession($movementId);
+
+        $this->authorizeMovement($session);
+
+        if ($session->isOpen() || $movement->reversal_of_id !== null || $movement->isReversed()) {
+            $this->dispatch('toast', type: 'error', message: 'Gerakan kas ini tidak bisa dibatalkan.');
+
+            return;
+        }
+
+        $this->movementSessionId = (int) $session->id;
+        $this->reversalMovementId = (int) $movement->id;
+        $this->reversalReason = '';
+        $this->resetValidation();
+        $this->movementModalOpen = true;
+    }
+
+    public function cancelReversal(): void
+    {
+        $this->reversalMovementId = null;
+        $this->reversalReason = '';
+        $this->resetValidation();
+    }
+
+    public function confirmReversal(ShiftSessionService $sessionService): void
+    {
+        if (! $this->reversalMovementId) {
+            return;
+        }
+
+        [$movement, $session] = $this->findMovementSession((int) $this->reversalMovementId);
+
+        $this->authorizeMovement($session);
+
+        $this->validate([
+            'reversalReason' => ['required', 'string', 'max:255'],
+        ], attributes: ['reversalReason' => 'alasan pembatalan']);
+
+        try {
+            $sessionService->reverseMovement($movement, auth()->user(), $this->reversalReason);
+        } catch (RuntimeException $exception) {
+            $this->addError('reversalReason', $exception->getMessage());
+
+            return;
+        }
+
+        $this->reversalMovementId = null;
+        $this->reversalReason = '';
+        $this->resetValidation();
+
+        $this->dispatch('toast', type: 'success', message: 'Gerakan kas dibatalkan.');
     }
 
     public function render(ShiftSessionService $sessionService): View
@@ -276,12 +333,16 @@ class ShiftSessionsPage extends Component
         }
 
         $movementSession = $this->movementSessionId
-            ? ShiftSession::query()->with(['user', 'shift', 'cashMovements.createdBy'])->find($this->movementSessionId)
+            ? ShiftSession::query()->with(['user', 'shift', 'cashMovements.createdBy', 'cashMovements.reversal'])->find($this->movementSessionId)
             : null;
 
         $movementMovements = $movementSession
             ? $movementSession->cashMovements->sortByDesc('created_at')->values()
             : collect();
+
+        $reversalMovement = $this->reversalMovementId
+            ? $movementMovements->firstWhere('id', $this->reversalMovementId)
+            : null;
 
         return view('livewire.shifts.shift-sessions-page', [
             'sessions' => $sessions,
@@ -292,6 +353,7 @@ class ShiftSessionsPage extends Component
             'requiredForPos' => $sessionService->requiredForPos(),
             'movementSession' => $movementSession,
             'movementMovements' => $movementMovements,
+            'reversalMovement' => $reversalMovement,
         ])->layout('layouts.app', ['title' => $this->title]);
     }
 
@@ -319,6 +381,14 @@ class ShiftSessionsPage extends Component
         }
 
         $this->authorize('shifts.sessions.close.any');
+    }
+
+    /** @return array{0: ShiftCashMovement, 1: ShiftSession} */
+    private function findMovementSession(int $movementId): array
+    {
+        $movement = ShiftCashMovement::query()->findOrFail($movementId);
+
+        return [$movement, ShiftSession::query()->findOrFail((int) $movement->shift_session_id)];
     }
 
     private function toAmount(string $value): int

@@ -121,7 +121,14 @@
                                         </button>
                                     @endcanany
                                 @else
-                                    <span class="text-xs text-gray-400 dark:text-gray-500">{{ $session->closedBy?->name ?? '-' }}</span>
+                                    <div class="flex items-center justify-end gap-2">
+                                        <span class="text-xs text-gray-400 dark:text-gray-500">{{ $session->closedBy?->name ?? '-' }}</span>
+                                        @canany(['shifts.sessions.close', 'shifts.sessions.close.any'])
+                                            <button type="button" wire:click="openMovementModal({{ (int) $session->id }})" class="shadow-theme-xs inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
+                                                Kas
+                                            </button>
+                                        @endcanany
+                                    </div>
                                 @endif
                             </td>
                         </tr>
@@ -232,6 +239,7 @@
                 </div>
 
                 <div class="space-y-4 p-5">
+                    @if ($movementSession?->isOpen())
                     <form wire:submit="saveMovement" autocomplete="off" class="grid grid-cols-1 gap-3 sm:grid-cols-4">
                         <div>
                             <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">Jenis</label>
@@ -260,6 +268,33 @@
                             <button type="submit" class="bg-brand-500 shadow-theme-xs hover:bg-brand-600 inline-flex h-11 items-center justify-center rounded-lg px-4 text-sm font-semibold text-white transition">Catat</button>
                         </div>
                     </form>
+                    @else
+                        <p class="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:border-gray-800 dark:bg-white/[0.03] dark:text-gray-400">
+                            Sesi kas sudah ditutup. Gerakan kas baru tidak bisa dicatat; koreksi dilakukan dengan pembatalan.
+                        </p>
+                    @endif
+
+                    @if ($reversalMovement)
+                        <form wire:submit="confirmReversal" autocomplete="off" class="space-y-3 rounded-xl border border-error-200 bg-error-50/60 p-4 dark:border-error-500/30 dark:bg-error-500/10">
+                            <div>
+                                <p class="text-sm font-semibold text-gray-800 dark:text-white/90">
+                                    Batalkan gerakan kas {{ $reversalMovement->isIn() ? 'masuk' : 'keluar' }} {{ $fmt((int) $reversalMovement->amount) }}?
+                                </p>
+                                <p class="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                                    Baris koreksi berlawanan arah akan ditambahkan; angka sesi yang sudah ditutup tidak berubah.
+                                </p>
+                            </div>
+                            <div>
+                                <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">Alasan pembatalan</label>
+                                <input wire:model.live="reversalReason" type="text" maxlength="255" placeholder="Contoh: Salah input setoran" class="shadow-theme-xs h-11 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400" />
+                                <x-common.input-error for="reversalReason" />
+                            </div>
+                            <div class="flex items-center justify-end gap-2">
+                                <button type="button" wire:click="cancelReversal" class="shadow-theme-xs inline-flex h-11 items-center justify-center rounded-lg border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-white/[0.03]">Batal</button>
+                                <button type="submit" class="bg-error-500 hover:bg-error-600 inline-flex h-11 items-center justify-center rounded-lg px-4 text-sm font-semibold text-white transition">Batalkan Gerakan</button>
+                            </div>
+                        </form>
+                    @endif
 
                     <div class="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800">
                         <table class="w-full table-auto">
@@ -284,7 +319,15 @@
                                         <td class="px-4 py-2 text-sm text-gray-800 dark:text-white/90">{{ (string) ($movement->category ?? '-') }}</td>
                                         <td class="px-4 py-2 text-sm text-gray-800 dark:text-white/90">{{ (string) ($movement->note ?? '-') }}</td>
                                         <td class="px-4 py-2 text-right">
-                                            <button type="button" wire:click="deleteMovement({{ (int) $movement->id }})" class="text-xs text-error-600 hover:text-error-700">Hapus</button>
+                                            @if ($movementSession?->isOpen())
+                                                <button type="button" wire:click="deleteMovement({{ (int) $movement->id }})" class="text-xs text-error-600 hover:text-error-700">Hapus</button>
+                                            @elseif ($movement->isReversed())
+                                                <span class="text-xs text-gray-400 dark:text-gray-500">Dibatalkan</span>
+                                            @elseif ($movement->reversal_of_id !== null)
+                                                <span class="text-xs text-gray-400 dark:text-gray-500">Koreksi</span>
+                                            @else
+                                                <button type="button" wire:click="startReversal({{ (int) $movement->id }})" class="text-xs text-error-600 hover:text-error-700">Batalkan</button>
+                                            @endif
                                         </td>
                                     </tr>
                                 @empty
