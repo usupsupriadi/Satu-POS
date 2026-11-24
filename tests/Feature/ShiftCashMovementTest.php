@@ -225,6 +225,34 @@ test('cashier reverses own closed movement but not another cashiers', function (
     expect($other->fresh()->isReversed())->toBeFalse();
 });
 
+test('cash and close buttons only show on own session or with close.any', function () {
+    $cashier = User::factory()->create();
+    $cashier->assignRole('cashier');
+
+    $ownClosed = makeClosedMovement($cashier);
+    $ownOpen = makeOpenSessionFor($cashier);
+    $otherClosed = makeClosedMovement(User::factory()->create());
+    $otherOpen = makeOpenSessionFor(User::factory()->create());
+
+    Livewire::actingAs($cashier)
+        ->test(ShiftSessionsPage::class)
+        ->assertSeeHtml('openMovementModal('.(int) $ownClosed->shift_session_id.')')
+        ->assertSeeHtml('openMovementModal('.(int) $ownOpen->id.')')
+        ->assertSeeHtml('openCloseModal('.(int) $ownOpen->id.')')
+        ->assertDontSeeHtml('openMovementModal('.(int) $otherClosed->shift_session_id.')')
+        ->assertDontSeeHtml('openMovementModal('.(int) $otherOpen->id.')')
+        ->assertDontSeeHtml('openCloseModal('.(int) $otherOpen->id.')');
+
+    $owner = User::factory()->create();
+    $owner->assignRole('owner');
+
+    Livewire::actingAs($owner)
+        ->test(ShiftSessionsPage::class)
+        ->assertSeeHtml('openMovementModal('.(int) $otherClosed->shift_session_id.')')
+        ->assertSeeHtml('openMovementModal('.(int) $otherOpen->id.')')
+        ->assertSeeHtml('openCloseModal('.(int) $otherOpen->id.')');
+});
+
 test('close stores expected cash including movements', function () {
     $user = User::factory()->create();
     $session = makeOpenSessionFor($user, 100000);

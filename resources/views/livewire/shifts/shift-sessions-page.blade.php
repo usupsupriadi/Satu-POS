@@ -112,22 +112,22 @@
                             </td>
                             <td class="px-5 py-4 text-right">
                                 @if ($session->isOpen())
-                                    @canany(['shifts.sessions.close', 'shifts.sessions.close.any'])
+                                    @if ($this->canManageSession($session))
                                         <button type="button" wire:click="openMovementModal({{ (int) $session->id }})" class="shadow-theme-xs inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
                                             Kas
                                         </button>
                                         <button type="button" wire:click="openCloseModal({{ (int) $session->id }})" class="shadow-theme-xs inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
                                             Tutup Kas
                                         </button>
-                                    @endcanany
+                                    @endif
                                 @else
                                     <div class="flex items-center justify-end gap-2">
                                         <span class="text-xs text-gray-400 dark:text-gray-500">{{ $session->closedBy?->name ?? '-' }}</span>
-                                        @canany(['shifts.sessions.close', 'shifts.sessions.close.any'])
+                                        @if ($this->canManageSession($session))
                                             <button type="button" wire:click="openMovementModal({{ (int) $session->id }})" class="shadow-theme-xs inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-white/[0.03]">
                                                 Kas
                                             </button>
-                                        @endcanany
+                                        @endif
                                     </div>
                                 @endif
                             </td>

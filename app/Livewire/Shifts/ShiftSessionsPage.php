@@ -383,6 +383,27 @@ class ShiftSessionsPage extends Component
         $this->authorize('shifts.sessions.close.any');
     }
 
+    /**
+     * Cermin dari authorizeClose()/authorizeMovement() untuk tampilan: tombol
+     * gerakan kas dan tutup kas hanya muncul pada sesi sendiri atau bila user
+     * boleh menutup sesi kasir lain, supaya tidak ada tombol yang berujung 403
+     * saat diklik.
+     */
+    public function canManageSession(ShiftSession $session): bool
+    {
+        $user = auth()->user();
+
+        if (! $user) {
+            return false;
+        }
+
+        if ((int) $session->user_id === (int) $user->id) {
+            return $user->can('shifts.sessions.close');
+        }
+
+        return $user->can('shifts.sessions.close.any');
+    }
+
     /** @return array{0: ShiftCashMovement, 1: ShiftSession} */
     private function findMovementSession(int $movementId): array
     {
