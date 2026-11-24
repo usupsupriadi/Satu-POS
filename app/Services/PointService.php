@@ -2,9 +2,11 @@
 
 namespace App\Services;
 
+use App\Models\Member;
 use App\Models\Setting;
 use App\Models\Transaction;
 use Exception;
+use Illuminate\Support\Facades\DB;
 
 class PointService
 {
@@ -77,8 +79,6 @@ class PointService
             throw new Exception('Transaction does not belong to a member.');
         }
 
-        $member = $transaction->member;
-
         $setting = Setting::current();
         $redemptionValue = (float) $setting->point_redemption_value;
         if ($redemptionValue <= 0) {
@@ -88,29 +88,40 @@ class PointService
         $baseForPoints = max(0, (int) $transaction->subtotal - (int) ($transaction->voucher_discount_amount ?? 0) - (int) ($transaction->manual_discount_amount ?? 0));
         $maxByBase = $baseForPoints > 0 ? (int) floor($baseForPoints / $redemptionValue) : 0;
 
-        $pointsToRedeem = min((int) $pointsToRedeem, (int) $member->points, (int) $maxByBase);
-        if ($pointsToRedeem <= 0) {
-            throw new Exception('Point redemption exceeds allowed amount.');
-        }
+        // Kunci baris member supaya dua transaksi bersamaan tidak bisa memakai
+        // saldo poin yang sama (read-then-decrement race).
+        DB::transaction(function () use ($transaction, $pointsToRedeem, $setting, $baseForPoints, $maxByBase) {
+            $member = Member::query()
+                ->whereKey((int) $transaction->member_id)
+                ->lockForUpdate()
+                ->first();
 
-        if ($member->points < $pointsToRedeem) {
-            throw new Exception('Insufficient points.');
-        }
+            if (! $member) {
+                throw new Exception('Transaction does not belong to a member.');
+            }
 
-        if ($pointsToRedeem < $setting->min_redemption_points) {
-            throw new Exception("Minimum redemption is {$setting->min_redemption_points} points.");
-        }
+            $points = min((int) $pointsToRedeem, (int) $member->points, (int) $maxByBase);
+            if ($points <= 0) {
+                throw new Exception('Point redemption exceeds allowed amount.');
+            }
 
-        $discountAmount = $this->calculateRedemptionValue($pointsToRedeem);
-        $discountAmount = min($discountAmount, $baseForPoints);
+            if ($member->points < $points) {
+                throw new Exception('Insufficient points.');
+            }
 
-        // Update transaction
-        $transaction->update([
-            'points_redeemed' => $pointsToRedeem,
-            'point_discount_amount' => $discountAmount,
-        ]);
+            if ($points < (int) $setting->min_redemption_points) {
+                throw new Exception("Minimum redemption is {$setting->min_redemption_points} points.");
+            }
 
-        // Deduct points immediately
-        $member->decrement('points', $pointsToRedeem);
+            $discountAmount = $this->calculateRedemptionValue($points);
+            $discountAmount = min($discountAmount, $baseForPoints);
+
+            $transaction->update([
+                'points_redeemed' => $points,
+                'point_discount_amount' => $discountAmount,
+            ]);
+
+            $member->decrement('points', $points);
+        });
     }
 }
