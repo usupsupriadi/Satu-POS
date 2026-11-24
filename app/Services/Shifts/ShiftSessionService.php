@@ -188,12 +188,10 @@ class ShiftSessionService
         $live = [];
 
         foreach ($sessions as $session) {
+            // Sesi tertutup bersnapshot tidak butuh query, jadi cukup lewat jalur
+            // satuan supaya penggabungan angkanya tidak ditulis dua kali.
             if (! $session->isOpen() && is_array($session->summary_snapshot)) {
-                $summary = $this->closedSummary($session);
-                $summary['expected_cash'] = $session->expected_cash ?? $summary['expected_cash'];
-                $summary['closing_cash'] = $session->closing_cash;
-                $summary['variance'] = $session->variance;
-                $summaries[(int) $session->id] = $summary;
+                $summaries[(int) $session->id] = $this->reconciliation($session);
             } else {
                 $live[(int) $session->id] = $session;
             }
@@ -233,8 +231,9 @@ class ShiftSessionService
             $cashRefunds = (int) ($transactions->cash_refunds ?? 0);
             $movementsIn = (int) ($movements->movements_in ?? 0);
             $movementsOut = (int) ($movements->movements_out ?? 0);
+            $liveExpectedCash = (int) $session->opening_cash + $cashSales - $cashRefunds + $movementsIn - $movementsOut;
 
-            $summary = [
+            $summaries[$id] = [
                 'transaction_count' => (int) ($transactions->transaction_count ?? 0),
                 'total_sales' => $totalSales,
                 'cash_sales' => $cashSales,
@@ -243,16 +242,12 @@ class ShiftSessionService
                 'cash_movements_in' => $movementsIn,
                 'cash_movements_out' => $movementsOut,
                 'cash_movement_count' => (int) ($movements->movement_count ?? 0),
-                'expected_cash' => (int) $session->opening_cash + $cashSales - $cashRefunds + $movementsIn - $movementsOut,
+                // Sesi tertutup tanpa snapshot (data lama) tetap memakai angka
+                // tersimpan bila ada, sama seperti reconciliation().
+                'expected_cash' => $session->isOpen() ? $liveExpectedCash : ($session->expected_cash ?? $liveExpectedCash),
                 'closing_cash' => $session->isOpen() ? null : $session->closing_cash,
                 'variance' => $session->isOpen() ? null : $session->variance,
             ];
-
-            if (! $session->isOpen()) {
-                $summary['expected_cash'] = $session->expected_cash ?? $summary['expected_cash'];
-            }
-
-            $summaries[$id] = $summary;
         }
 
         return $summaries;

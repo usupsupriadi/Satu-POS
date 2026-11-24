@@ -132,3 +132,29 @@ test('shift report uses stored figures for closed sessions and totals match the 
         ->assertSee(shiftMoney($totals['expected_cash']))
         ->assertSee(shiftMoney($totals['variance']));
 });
+
+test('batch reconciliations match per-session reconciliation', function () {
+    $scenario = shiftReconciliationScenario($this->service);
+    $this->service->recordMovement($scenario['open'], 'in', 15000, null, null, $scenario['open']->user);
+
+    // Sesi tertutup lama tanpa snapshot: harus dihitung live seperti reconciliation().
+    $legacy = shiftClosedSession($this->service, openingCash: 80000, cashSales: 25000, closingCash: 105000, mutatedTotal: 40000);
+    $legacy->forceFill(['summary_snapshot' => null])->save();
+
+    $sessions = ShiftSession::query()
+        ->whereIn('id', [
+            $scenario['closedA']->id,
+            $scenario['closedB']->id,
+            $scenario['open']->id,
+            $legacy->id,
+        ])
+        ->get();
+
+    $batch = $this->service->reconciliations($sessions);
+
+    expect($batch)->toHaveCount(4);
+
+    foreach ($sessions as $session) {
+        expect($batch[(int) $session->id])->toBe($this->service->reconciliation($session));
+    }
+});
