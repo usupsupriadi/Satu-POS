@@ -191,11 +191,16 @@ function shiftLiveSessions(ShiftSessionService $service, int $count): void
 }
 
 /**
- * Jumlah query saat merender satu halaman Livewire penuh.
+ * Jumlah query satu render halaman Livewire penuh. Satu render pemanasan
+ * dimuat lebih dulu supaya query cache peran/izin tidak ikut terhitung.
  */
 function shiftPageQueries(string $page, User $user): int
 {
-    return shiftQueryCount(fn () => Livewire::actingAs($user)->test($page)->assertOk());
+    $render = fn () => Livewire::actingAs($user)->test($page)->assertOk();
+
+    $render();
+
+    return shiftQueryCount($render);
 }
 
 test('cash sessions page summarizes live sessions with aggregate queries only', function () {
@@ -206,15 +211,15 @@ test('cash sessions page summarizes live sessions with aggregate queries only', 
 
     $batchQueries = shiftQueryCount(fn () => $this->service->reconciliations($rows));
     $perRowQueries = shiftQueryCount(fn () => $rows->each(fn (ShiftSession $session) => $this->service->reconciliation($session)));
-    $pageQueries = shiftQueryCount(fn () => Livewire::actingAs($this->admin)->test(ShiftSessionsPage::class)->assertOk());
+    $pageQueries = shiftPageQueries(ShiftSessionsPage::class, $this->admin);
 
     // 7 sesi live x 7 query cashSummary(); sesi tertutup bersnapshot tanpa query.
-    // Terukur: batch 2 query, per baris 49 query, render halaman 14 query.
+    // Terukur: batch 2 query, per baris 49 query, render halaman 8 query.
     expect($batchQueries)->toBe(2)
         ->and($perRowQueries)->toBe(49)
         ->and($pageQueries)->toBeLessThan($perRowQueries)
         // Batas ketat di angka terukur: gagal bila halaman menambah query.
-        ->and($pageQueries)->toBeLessThanOrEqual(14);
+        ->and($pageQueries)->toBeLessThanOrEqual(8);
 });
 
 test('shift report summarizes all rows with aggregate queries only', function () {
@@ -228,23 +233,20 @@ test('shift report summarizes all rows with aggregate queries only', function ()
         $this->service->reconciliations($rows);
     });
     $perRowQueries = shiftQueryCount(fn () => $rows->each(fn (ShiftSession $session) => $this->service->reconciliation($session)));
-    $pageQueries = shiftQueryCount(fn () => Livewire::actingAs($this->admin)->test(ShiftReportPage::class)->assertOk());
+    $pageQueries = shiftPageQueries(ShiftReportPage::class, $this->admin);
 
     // Laporan merangkum baris dan total: dua pemanggilan batch = 4 query agregat.
-    // Terukur: batch 4 query, per baris 49 query, render halaman 14 query.
+    // Terukur: batch 4 query, per baris 49 query, render halaman 13 query.
     expect($batchQueries)->toBe(4)
         ->and($perRowQueries)->toBe(49)
         ->and($pageQueries)->toBeLessThan($perRowQueries)
         // Batas ketat di angka terukur: gagal bila halaman menambah query.
-        ->and($pageQueries)->toBeLessThanOrEqual(14);
+        ->and($pageQueries)->toBeLessThanOrEqual(13);
 });
 
 test('cash sessions page query count stays flat as live sessions grow', function () {
     shiftReconciliationScenario($this->service);
     shiftLiveSessions($this->service, 1);
-
-    // Render pemanasan: muat cache peran/izin agar tidak terhitung di baseline.
-    shiftPageQueries(ShiftSessionsPage::class, $this->admin);
 
     $small = shiftPageQueries(ShiftSessionsPage::class, $this->admin);
 
@@ -259,9 +261,6 @@ test('cash sessions page query count stays flat as live sessions grow', function
 test('shift report query count stays flat as live sessions grow', function () {
     shiftReconciliationScenario($this->service);
     shiftLiveSessions($this->service, 1);
-
-    // Render pemanasan: muat cache peran/izin agar tidak terhitung di baseline.
-    shiftPageQueries(ShiftReportPage::class, $this->admin);
 
     $small = shiftPageQueries(ShiftReportPage::class, $this->admin);
 
