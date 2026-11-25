@@ -44,7 +44,7 @@ class AppServiceProvider extends ServiceProvider
         // printer_sources. Sekarang hanya layout admin yang memuatnya, dan
         // hasilnya di-cache singkat.
         View::composer('layouts.app', function (\Illuminate\View\View $view): void {
-            $printerSourcesForJs = Cache::remember('printer_sources_for_js', 300, function (): array {
+            $loadPrinterSources = function (): array {
                 return PrinterSource::query()
                     ->orderBy('name')
                     ->get(['id', 'name', 'type'])
@@ -54,7 +54,13 @@ class AppServiceProvider extends ServiceProvider
                         'type' => (string) $s->type,
                     ])
                     ->all();
-            });
+            };
+
+            // Di lingkungan testing cache dilewati agar data uji selalu segar,
+            // sama seperti cache laporan penjualan.
+            $printerSourcesForJs = app()->environment('testing')
+                ? $loadPrinterSources()
+                : Cache::remember('printer_sources_for_js', 300, $loadPrinterSources);
 
             $view->with('printerSourcesForJs', is_array($printerSourcesForJs) ? $printerSourcesForJs : []);
         });
