@@ -15,14 +15,22 @@ class Setting extends Model
 
     protected static function booted(): void
     {
-        $forget = static function (): void {
-            if (app()->bound(self::CACHE_KEY)) {
-                app()->forgetInstance(self::CACHE_KEY);
-            }
-        };
+        static::saved(static function (): void {
+            self::forgetCurrent();
+        });
+        static::deleted(static function (): void {
+            self::forgetCurrent();
+        });
+    }
 
-        static::saved($forget);
-        static::deleted($forget);
+    /**
+     * Buang instance cache supaya current() membaca ulang dari database.
+     */
+    public static function forgetCurrent(): void
+    {
+        if (app()->bound(self::CACHE_KEY)) {
+            app()->forgetInstance(self::CACHE_KEY);
+        }
     }
 
     protected $fillable = [

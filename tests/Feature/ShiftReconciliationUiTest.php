@@ -2,6 +2,7 @@
 
 use App\Livewire\Shifts\ShiftReportPage;
 use App\Livewire\Shifts\ShiftSessionsPage;
+use App\Models\Setting;
 use App\Models\ShiftSession;
 use App\Models\Transaction;
 use App\Models\User;
@@ -210,6 +211,11 @@ function shiftPageQueries(string $page, User $user): int
     $render = fn () => Livewire::actingAs($user)->test($page)->assertOk();
 
     $render();
+
+    // Regresi: cache Setting::current() dikosongkan sebelum render yang diukur,
+    // jadi batas 8/13 harus tetap lulus walau render berikutnya menembak query
+    // settings. Kalau query settings ikut terhitung, render dingin ini gagal.
+    Setting::forgetCurrent();
 
     return shiftQueryCount(
         $render,
