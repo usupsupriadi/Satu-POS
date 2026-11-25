@@ -56,3 +56,9 @@ Schedule::command('vouchers:alert')->dailyAt('08:00');
 Schedule::command('self-order:expire-pending')
     ->everyMinute()
     ->withoutOverlapping();
+
+if (config('backup.enabled')) {
+    Schedule::command('backup:database')
+        ->dailyAt((string) config('backup.schedule_time', '02:30'))
+        ->withoutOverlapping();
+}

@@ -174,12 +174,99 @@ G. CHECKLIST SETELAH DEPLOY
 [ ] php scripts/check-ssl.php menghasilkan exit 0 (CA bundle & HTTPS Pusher OK)
 [ ] Email verifikasi member terkirim
 [ ] Queue worker & scheduler berjalan (termasuk `self-order:expire-pending` tiap menit)
+[ ] `php artisan backup:database` sukses; arsip `.sql.gz` + `.json` ada di storage/app/backups/database
+[ ] Restore arsip terbaru ke database uji berhasil (`backup:restore --latest --database=pos_uji --force`)
+[ ] Backup harian terjadwal aktif (cron `scripts/backup-database.sh` atau Task Scheduler Windows)
 [ ] QR meja bertanda tangan (`?e=...&s=...`) dan sudah dicetak ulang
 [ ] storage:link aktif (logo/QR/foto tampil)
 [ ] PWA admin bisa di-install dan ikon baru tampil
 
 
-H. UPDATE VERSI
+H. BACKUP & RESTORE DATABASE
+----------------------------
+Backup memakai utilitas klien MariaDB/MySQL yang terpasang bersama server
+database (`mariadb-dump`/`mysqldump` dan `mariadb`/`mysql`), jadi tidak perlu
+paket tambahan. Arsip disimpan sebagai `.sql.gz` beserta berkas `.json` berisi
+jumlah tabel, ukuran, dan SHA256 untuk verifikasi saat restore.
+
+Variabel `.env` (semua opsional, default sudah aman):
+   DB_BACKUP_ENABLED=true            #false = backup terjadwal dimatikan
+   DB_BACKUP_KEEP=14                 #jumlah arsip terbaru yang disimpan
+   DB_BACKUP_SCHEDULE_TIME=02:30     #jam backup harian (APP_TIMEZONE)
+   DB_BACKUP_PATH=                   #default storage/app/backups/database
+   DB_BACKUP_TIMEOUT=1800            #batas waktu proses (detik)
+   DB_BACKUP_DUMP_BINARY=            #isi bila maria-dump/mysqldump tidak terdeteksi
+   DB_BACKUP_CLIENT_BINARY=          #isi bila klien mariadb/mysql tidak terdeteksi
+
+Perintah manual:
+   php artisan backup:database
+   php artisan backup:database --keep=30
+   php artisan backup:restore --latest --force
+   php artisan backup:restore storage/app/backups/database/backup-pos-20260101-023000.sql.gz --force
+   php artisan backup:restore --latest --database=pos_uji --force
+
+PENTING soal restore:
+- `--force` WAJIB. Tanpa itu perintah menolak dan keluar dengan kode 1.
+- Isi database tujuan dihapus lebih dulu (semua tabel dan view), jadi restore
+  tidak menumpuk data lama dan hasilnya sama dengan isi arsip.
+- Bila database tujuan belum ada, database dibuat otomatis (utf8mb4).
+- Checksum arsip dicocokkan dengan berkas `.json`; arsip rusak/berubah ditolak.
+- Setelah restore jalankan `php artisan optimize:clear` dan restart queue worker.
+- User database butuh hak CREATE, DROP, INSERT, ALTER, REFERENCES, TRIGGER,
+  EVENT, dan CREATE VIEW untuk restore penuh.
+
+
+H.1 VPS LINUX
+-------------
+1) Pastikan klien tersedia:
+     which mariadb-dump || which mysqldump
+     which mariadb || which mysql
+   Bila tidak ada: apt install mariadb-client (atau mysql-client).
+
+2) Backup otomatis, pilih salah satu:
+   a. Cron langsung ke skrip (paling sederhana, log di storage/logs):
+        30 2 * * * /var/www/satu-pos/scripts/backup-database.sh
+      (sesuaikan path project; jalankan `chmod +x scripts/backup-database.sh`)
+   b. Lewat scheduler Laravel yang sudah berjalan (cron tiap menit di bagian D):
+      `backup:database` otomatis terdaftar pada jam DB_BACKUP_SCHEDULE_TIME.
+
+3) Pastikan user cron/scheduler bisa menulis `storage/app/backups` dan
+   `storage/logs` (sama seperti user web server).
+
+4) Uji restore ke database kosong (lakukan berkala, bukan hanya saat darurat):
+     mysql -uroot -e "DROP DATABASE IF EXISTS pos_uji; CREATE DATABASE pos_uji"
+     php artisan backup:restore --latest --database=pos_uji --force
+     php artisan tinker --execute="echo DB::connection('mysql')->table('migrations')->count();"
+   Hapus database uji setelah selesai: mysql -uroot -e "DROP DATABASE pos_uji"
+
+
+H.2 WINDOWS LOKAL
+-----------------
+1) Binary dideteksi otomatis dari folder instalasi MariaDB/MySQL, XAMPP, atau
+   Laragon. Bila tidak terdeteksi, isi di `.env`, contoh:
+     DB_BACKUP_DUMP_BINARY="C:\Program Files\MariaDB 13.0\bin\mariadb-dump.exe"
+     DB_BACKUP_CLIENT_BINARY="C:\Program Files\MariaDB 13.0\bin\mariadb.exe"
+
+2) Backup manual:
+     scripts\backup-database.bat
+
+3) Backup otomatis harian lewat Task Scheduler (jalankan sekali di cmd admin):
+     schtasks /Create /SC DAILY /ST 02:30 /TN "Satu POS - Backup Database" ^
+       /TR "D:\Satu-POS\scripts\backup-database.bat"
+   Scheduler Laravel tidak berjalan otomatis di Windows, jadi gunakan Task
+   Scheduler (atau `php artisan schedule:work` di jendela terpisah).
+
+4) Uji restore ke database kosong:
+     "C:\Program Files\MariaDB 13.0\bin\mariadb.exe" -uroot -e "DROP DATABASE IF EXISTS pos_uji; CREATE DATABASE pos_uji"
+     php artisan backup:restore --latest --database=pos_uji --force
+     php artisan backup:restore --latest --force   (ke database aplikasi)
+
+Catatan: arsip backup tidak ikut di-commit (`.gitignore`). Simpan salinan arsip
+ke disk/server lain secara berkala agar kehilangan satu mesin tidak menghapus
+riwayat backup.
+
+
+I. UPDATE VERSI
 ---------------
    php artisan down
    git pull            (atau upload kode baru)
